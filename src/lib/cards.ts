@@ -33,6 +33,12 @@ export interface CardListItem {
   rarity: string | null;
   hasTrigger: boolean;
   imageUrlJp: string | null;
+  /**
+   * Canonical mechanics ids (see `src/lib/mechanics.ts`). Carrying these on
+   * the list shape lets the deck builder + evaluator filter and score
+   * without doing per-card detail fetches.
+   */
+  mechanics: string[];
   source: CardTranslationSource;
   verified: boolean;
 }
@@ -43,7 +49,6 @@ export interface CardDetail extends CardListItem {
   flavorText: string | null;
   sourceUrl: string | null;
   fetchedAt: Date | null;
-  mechanics: string[];
 }
 
 export interface CardListResult {
@@ -106,6 +111,7 @@ async function listFromDb(
       colors: cards.colors,
       attributes: cards.attributes,
       features: cards.features,
+      mechanics: cards.mechanics,
       cost: cards.cost,
       power: cards.power,
       counter: cards.counter,
@@ -133,6 +139,7 @@ async function listFromDb(
       colors: (r.colors ?? []) as string[],
       attributes: (r.attributes ?? []) as string[],
       features: (r.features ?? []) as string[],
+      mechanics: (r.mechanics ?? []) as string[],
       cost: r.cost,
       power: r.power,
       counter: r.counter,
@@ -228,7 +235,6 @@ function getFromMock(id: string): CardDetail | null {
   if (!c) return null;
   return {
     ...toListItem(c),
-    mechanics: c.mechanics,
     effectText: c.effectText,
     triggerText: c.triggerText,
     flavorText: null,
@@ -246,6 +252,7 @@ function toListItem(c: MockCard): CardListItem {
     colors: c.colors,
     attributes: c.attributes,
     features: c.features,
+    mechanics: c.mechanics,
     cost: c.cost,
     power: c.power,
     counter: c.counter,

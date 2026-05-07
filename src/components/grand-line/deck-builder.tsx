@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { ColorChip } from "@/components/grand-line/color-chip";
+import { DeckRadar } from "@/components/grand-line/deck-radar";
+import { ProbabilityPanel } from "@/components/grand-line/probability-panel";
 import { SourceBadge } from "@/components/grand-line/source-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,6 +12,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Input } from "@/components/ui/input";
+import { evaluateDeck, type EvalCard } from "@/lib/deck-evaluation";
 import {
   costCurve,
   validateDeck,
@@ -69,9 +72,22 @@ export function DeckBuilder({ leader, pool, usingMock }: DeckBuilderProps) {
     count: e.count,
     cost: e.card.cost ?? null,
   }));
+  const evalCards: EvalCard[] = Object.values(entries).map((e) => ({
+    id: e.card.id,
+    cardType: e.card.cardType,
+    colors: e.card.colors,
+    features: e.card.features,
+    cost: e.card.cost,
+    power: e.card.power,
+    counter: e.card.counter,
+    hasTrigger: e.card.hasTrigger,
+    mechanics: e.card.mechanics,
+    count: e.count,
+  }));
   const report = validateDeck(draftLeader, ruleCards);
   const curve = costCurve(ruleCards);
   const total = report.totalCount;
+  const evaluation = useMemo(() => evaluateDeck(evalCards), [evalCards]);
   const sortedEntries = Object.values(entries).sort((a, b) => {
     const ca = a.card.cost ?? 99;
     const cb = b.card.cost ?? 99;
@@ -214,6 +230,22 @@ export function DeckBuilder({ leader, pool, usingMock }: DeckBuilderProps) {
         </Card>
 
         <RuleReport violations={report.violations} legal={report.legal} />
+
+        {/* 5-metric radar */}
+        <Card className="border-border/40 bg-card/40">
+          <CardContent className="space-y-3 p-4">
+            <div className="flex items-baseline justify-between">
+              <h3 className="font-display text-sm tracking-wide">評価指標</h3>
+              <span className="text-muted-foreground text-[10px] tracking-widest uppercase">
+                Phase 3
+              </span>
+            </div>
+            <DeckRadar evaluation={evaluation} />
+          </CardContent>
+        </Card>
+
+        {/* Probability turn chart */}
+        <ProbabilityPanel entries={sortedEntries} />
 
         {/* Current draft */}
         <Card className="border-border/40 bg-card/40">
