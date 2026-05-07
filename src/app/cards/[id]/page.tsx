@@ -1,0 +1,158 @@
+import Link from "next/link";
+import { notFound } from "next/navigation";
+
+import { SiteHeader } from "@/components/grand-line/site-header";
+import { ColorChip } from "@/components/grand-line/color-chip";
+import { SourceBadge } from "@/components/grand-line/source-badge";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
+import { getCard } from "@/lib/cards";
+
+interface PageProps {
+  params: Promise<{ id: string }>;
+}
+
+export async function generateMetadata({ params }: PageProps) {
+  const { id } = await params;
+  const card = await getCard(id);
+  return {
+    title: card ? `${card.name} (${card.id})` : id,
+  };
+}
+
+export default async function CardDetailPage({ params }: PageProps) {
+  const { id } = await params;
+  const card = await getCard(id);
+  if (!card) notFound();
+
+  const stats: Array<[string, string | number | null]> = [
+    ["コスト", card.cost],
+    ["パワー", card.power],
+    ["カウンター", card.counter],
+    ["ライフ", card.life],
+    ["レアリティ", card.rarity],
+    ["セット", card.setCode],
+  ];
+
+  return (
+    <>
+      <SiteHeader />
+      <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-6 px-4 py-8">
+        <Button asChild variant="ghost" size="sm" className="self-start">
+          <Link href="/cards">← カード一覧</Link>
+        </Button>
+
+        <div className="grid gap-6 md:grid-cols-[280px_1fr]">
+          <div className="space-y-3">
+            <div className="border-border/40 bg-card/40 flex aspect-[3/4] items-center justify-center rounded-lg border">
+              {card.imageUrlJp ? (
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img
+                  src={card.imageUrlJp}
+                  alt={card.name}
+                  className="h-full w-full rounded-md object-contain"
+                />
+              ) : (
+                <div className="text-muted-foreground p-6 text-center text-xs">
+                  画像未取得
+                  <br />
+                  (スクレイプ後に表示されます)
+                </div>
+              )}
+            </div>
+            <SourceBadge source={card.source} verified={card.verified} />
+          </div>
+
+          <div className="space-y-5">
+            <header className="space-y-1">
+              <p className="text-muted-foreground font-mono text-xs tracking-widest uppercase">
+                {card.id} · {card.cardType}
+              </p>
+              <h1 className="font-display text-3xl leading-tight tracking-wide">
+                {card.name}
+              </h1>
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {card.colors.map((c) => (
+                  <ColorChip key={c} color={c} />
+                ))}
+                {card.attributes.map((a) => (
+                  <Badge key={a} variant="outline">
+                    {a}
+                  </Badge>
+                ))}
+                {card.features.map((f) => (
+                  <Badge key={f} variant="secondary">
+                    {f}
+                  </Badge>
+                ))}
+              </div>
+            </header>
+
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+              {stats.map(([label, value]) =>
+                value === null || value === undefined ? null : (
+                  <div
+                    key={label}
+                    className="border-border/40 bg-card/40 rounded-md border p-2 text-center"
+                  >
+                    <div className="text-muted-foreground text-[10px] tracking-widest uppercase">
+                      {label}
+                    </div>
+                    <div className="font-mono text-sm">{value}</div>
+                  </div>
+                ),
+              )}
+            </div>
+
+            <Card className="border-border/40 bg-card/40">
+              <CardContent className="space-y-3 p-4">
+                <h2 className="text-primary text-xs tracking-widest uppercase">
+                  効果
+                </h2>
+                <p className="text-foreground/90 text-sm leading-relaxed whitespace-pre-line">
+                  {card.effectText ?? "(効果テキストなし)"}
+                </p>
+                {card.triggerText ? (
+                  <>
+                    <Separator />
+                    <h2 className="text-primary text-xs tracking-widest uppercase">
+                      [トリガー]
+                    </h2>
+                    <p className="text-foreground/90 text-sm leading-relaxed whitespace-pre-line">
+                      {card.triggerText}
+                    </p>
+                  </>
+                ) : null}
+                {card.flavorText ? (
+                  <>
+                    <Separator />
+                    <p className="text-muted-foreground text-xs italic leading-relaxed">
+                      {card.flavorText}
+                    </p>
+                  </>
+                ) : null}
+              </CardContent>
+            </Card>
+
+            {card.mechanics.length > 0 ? (
+              <div>
+                <h3 className="text-muted-foreground mb-2 text-xs tracking-widest uppercase">
+                  検出された仕様キーワード
+                </h3>
+                <div className="flex flex-wrap gap-1.5">
+                  {card.mechanics.map((m) => (
+                    <Badge key={m} variant="outline" className="font-mono">
+                      {m}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </main>
+    </>
+  );
+}
