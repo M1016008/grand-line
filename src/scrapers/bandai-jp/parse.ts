@@ -1,15 +1,27 @@
 /**
  * Parse a saved Bandai cardlist HTML fixture into ScrapedCard records.
  *
- * The selectors here are based on the publicly observable structure of
- * https://www.onepiece-cardgame.com/cardlist/ as of 2026-05. Bandai
- * occasionally tweaks their markup, so anything fragile is documented
- * inline with a `// SELECTOR:` comment so it's easy to grep and update
- * after a layout change.
+ * The selectors here track the structure of
+ * https://www.onepiece-cardgame.com/cardlist/?series=NNNN as captured
+ * on 2026-05-08. Each card is a `<dl class="modalCol" id="OP01-001">`
+ * with a `<dt>` header (id + name) and a `<dd>` body containing the
+ * stats and the effect text.
  *
- * The parser is **pure**: it accepts an HTML string and returns parsed
- * cards. No filesystem, no network. Errors throw so the caller can decide
- * whether to log + continue or abort the run.
+ * Quirks worth knowing:
+ *  - Parallel artworks duplicate the card with id suffixes `_p1`, `_p2`,
+ *    `_p3`. We dedupe on the base id and keep the first occurrence —
+ *    parallels carry no new game data.
+ *  - For LEADER cards, the `<div class="cost">` actually contains
+ *    LIFE (the `<h3>` label switches between "コスト" and "ライフ").
+ *  - Attribute is rendered as an `<img alt="斬"/>` icon. Events use a
+ *    bare "-" instead of an icon.
+ *  - Counter / Power show "-" when not applicable. We map these to null.
+ *  - Effect text uses 【】 corner brackets; `normalizeEffectText` folds
+ *    them into [] so the mechanics extractor matches either form.
+ *
+ * The parser is **pure** — accepts an HTML string + base URL, returns
+ * parsed cards. No filesystem, no network. Errors throw so the caller
+ * can decide whether to log + continue or abort the run.
  */
 import * as cheerio from "cheerio";
 import type { AnyNode } from "domhandler";
@@ -19,18 +31,9 @@ import { normalizeEffectText } from "@/lib/normalize";
 import type { RawSetFixture, ScrapedCard } from "./types";
 
 interface ParseOptions {
-  /** Skip cards whose card_id can't be parsed; default false (throw instead). */
+  /** Skip cards whose data can't be parsed; default false (throw instead). */
   lenient?: boolean;
 }
-
-const CARD_TYPE_MAP: Record<string, ScrapedCard["cardType"]> = {
-  リーダー: "LEADER",
-  キャラクター: "CHARACTER",
-  キャラ: "CHARACTER",
-  イベント: "EVENT",
-  ステージ: "STAGE",
-  ドン: "DON",
-};
 
 const COLOR_MAP: Record<string, string> = {
   赤: "red",
@@ -41,17 +44,27 @@ const COLOR_MAP: Record<string, string> = {
   黄: "yellow",
 };
 
+const RARITY_TO_TYPE_HINT: Record<string, ScrapedCard["cardType"] | undefined> = {
+  L: "LEADER",
+};
+
+const TYPE_LABELS: Record<string, ScrapedCard["cardType"]> = {
+  LEADER: "LEADER",
+  CHARACTER: "CHARACTER",
+  EVENT: "EVENT",
+  STAGE: "STAGE",
+  DON: "DON",
+};
+
 export function parseSetHtml(
   fixture: RawSetFixture,
   opts: ParseOptions = {},
 ): ScrapedCard[] {
   const $ = cheerio.load(fixture.html);
-  const cards: ScrapedCard[] = [];
+  const out: ScrapedCard[] = [];
+  const seen = new Set<string>(); // dedupe parallel artworks by base id
 
-  // SELECTOR: each card lives in `.modalCol` (modal column) on the live page.
-  // Some sets render an outer `.list .modalCol` and others wrap them in a
-  // generic `.cardlist .modalCol`; querying just `.modalCol` covers both.
-  const nodes = $(".modalCol");
+  const nodes = $("dl.modalCol");
   if (nodes.length === 0) {
     throw new Error(
       `No .modalCol nodes found in fixture for ${fixture.setCode}. The Bandai layout may have changed — re-inspect data/raw/bandai-jp/${fixture.setCode}.html.`,
@@ -60,7 +73,11 @@ export function parseSetHtml(
 
   nodes.each((_, el) => {
     try {
-      cards.push(parseCardNode($, $(el), fixture));
+      const card = parseCardNode($, $(el), fixture);
+      const baseId = card.id; // already stripped of `_pN`
+      if (seen.has(baseId)) return;
+      seen.add(baseId);
+      out.push(card);
     } catch (err) {
       if (opts.lenient) {
         console.warn(`⚠ Skipping card: ${(err as Error).message}`);
@@ -70,7 +87,7 @@ export function parseSetHtml(
     }
   });
 
-  return cards;
+  return out;
 }
 
 function parseCardNode(
@@ -78,72 +95,62 @@ function parseCardNode(
   node: cheerio.Cheerio<AnyNode>,
   fixture: RawSetFixture,
 ): ScrapedCard {
-  // SELECTOR: the human-readable id ("OP01-001") is the modal heading.
-  const idText = textOf(node.find(".cardNumber, .cardId, .infoCol h2").first());
-  const idMatch = idText.match(/([A-Z]{2,4}\d{2,3}-\d{3,4})/);
-  if (!idMatch) {
-    throw new Error(`Could not parse card id from "${idText}"`);
+  // The infoCol holds three `<span>`s separated by `|`: id, rarity, type.
+  // Reading via the spans is more robust than text-splitting because
+  // Bandai sometimes wraps with whitespace/icons.
+  const infoSpans = node.find(".infoCol > span");
+  if (infoSpans.length < 3) {
+    throw new Error(`infoCol missing required spans for ${node.attr("id") ?? "?"}`);
   }
-  const id = idMatch[1];
+  const idRaw = textOf($(infoSpans[0]));
+  const rarity = textOf($(infoSpans[1])) || null;
+  const typeText = textOf($(infoSpans[2]));
+
+  const idMatch = idRaw.match(/([A-Z]{2,4}\d{2,3}-\d{3,4})/);
+  if (!idMatch) throw new Error(`Could not parse card id from "${idRaw}"`);
+  const id = idMatch[1]; // OP01-001 (parallels' `_p2` etc never appear in the span text)
   const setCode = id.split("-")[0];
 
-  const name = textOf(node.find(".cardName, .infoCol h1").first());
-  if (!name) throw new Error(`No name found for ${id}`);
-
-  // The rest of the data is presented as a definition list of `.col` rows
-  // each with a `<dt>` label and `<dd>` value. Reading them into a Map
-  // makes the field extraction order-independent.
-  const fields = new Map<string, string>();
-  node.find(".col, dl > div").each((_, row) => {
-    const label = textOf($(row).find("dt, .label").first());
-    const value = textOf($(row).find("dd, .value").first());
-    if (label) fields.set(label, value);
-  });
-
-  const cardTypeRaw = fields.get("種類") ?? fields.get("カード種類") ?? "";
-  const cardType =
-    CARD_TYPE_MAP[cardTypeRaw.trim()] ??
-    (cardTypeRaw.includes("リーダー")
-      ? "LEADER"
-      : cardTypeRaw.includes("キャラ")
-        ? "CHARACTER"
-        : cardTypeRaw.includes("イベント")
-          ? "EVENT"
-          : cardTypeRaw.includes("ステージ")
-            ? "STAGE"
-            : cardTypeRaw.includes("ドン")
-              ? "DON"
-              : null);
+  let cardType: ScrapedCard["cardType"] | null = TYPE_LABELS[typeText.toUpperCase()] ?? null;
   if (!cardType) {
-    throw new Error(`Unknown card type "${cardTypeRaw}" for ${id}`);
+    cardType = RARITY_TO_TYPE_HINT[rarity ?? ""] ?? null;
   }
+  if (!cardType) throw new Error(`Unknown card type "${typeText}" for ${id}`);
 
-  const colors = (fields.get("色") ?? "")
-    .split(/[\/／\s]+/)
+  const name = textOf(node.find(".cardName").first());
+  if (!name) throw new Error(`No cardName for ${id}`);
+
+  // Stats. The `<h3>` label distinguishes コスト vs ライフ inside `.cost`.
+  const cost = pickStatLabelled(node, ".cost", "コスト");
+  const life = pickStatLabelled(node, ".cost", "ライフ");
+  const power = pickStat(node, ".power");
+  const counter = pickStat(node, ".counter");
+
+  // Color uses `/` as separator between dual colors.
+  const colorRaw = stripLabel(node.find(".color").first());
+  const colors = colorRaw
+    .split(/[\/／]/)
     .map((c) => c.trim())
     .filter(Boolean)
     .map((c) => COLOR_MAP[c] ?? c.toLowerCase());
 
-  const attributes = (fields.get("属性") ?? "")
-    .split(/[\/／\s]+/)
-    .map((a) => a.trim())
-    .filter(Boolean);
-
-  const features = (fields.get("特徴") ?? "")
-    .split(/[\/／・,，\s]+/)
+  const features = stripLabel(node.find(".feature").first())
+    .split(/[\/／]/)
     .map((f) => f.trim())
     .filter(Boolean);
 
-  const effectText = normalizeEffectText(fields.get("効果"));
-  const triggerText = normalizeEffectText(fields.get("トリガー"));
-  const flavorText = normalizeEffectText(fields.get("フレーバー") ?? fields.get("フレーバーテキスト"));
+  // Attribute is the `alt` attribute of the icon image; events display "-".
+  const attrAlt = node.find(".attribute img").attr("alt") ?? "";
+  const attributes = attrAlt && attrAlt !== "-" ? [attrAlt.trim()] : [];
 
-  // SELECTOR: card image — Bandai uses /images/cardlist/card/<id>.png
-  const imageSrc =
-    node.find(".infoCol img, .cardImg img").attr("src") ??
-    node.find("img").first().attr("src") ??
-    null;
-  const imageUrlJp = imageSrc ? new URL(imageSrc, fixture.url).toString() : null;
+  const effectText = normalizeEffectText(extractTextWithBreaks(node.find(".text").first()));
+  const triggerText = normalizeEffectText(extractTextWithBreaks(node.find(".trigger").first()));
+
+  // Image lives in <img class="lazy" data-src="..."> with src="dummy.gif".
+  // We resolve the relative path against the page URL so storing it as-is
+  // remains usable from the browser.
+  const dataSrc = node.find(".frontCol img.lazy").attr("data-src") ?? null;
+  const imageUrlJp = dataSrc ? new URL(dataSrc, fixture.url).toString() : null;
 
   return {
     id,
@@ -152,17 +159,17 @@ function parseCardNode(
     colors,
     attributes,
     features,
-    cost: parseIntOrNull(fields.get("コスト") ?? fields.get("ライフ")),
-    power: parseIntOrNull(fields.get("パワー")),
-    counter: parseIntOrNull(fields.get("カウンター")),
-    life: cardType === "LEADER" ? parseIntOrNull(fields.get("ライフ")) : null,
-    rarity: fields.get("レアリティ")?.trim() || null,
+    cost: cardType === "LEADER" ? null : cost,
+    power,
+    counter,
+    life: cardType === "LEADER" ? life : null,
+    rarity,
     hasTrigger: Boolean(triggerText),
     imageUrlJp,
 
     name,
     effectText: effectText || null,
-    flavorText: flavorText || null,
+    flavorText: null, // Bandai cardlist doesn't expose flavor in this view
     triggerText: triggerText || null,
 
     sourceUrl: `${fixture.url}#${id}`,
@@ -170,14 +177,64 @@ function parseCardNode(
   };
 }
 
-/* helpers */
+/* ──────────────────────────────────────────────────────────────────────── */
+/* helpers                                                                   */
+/* ──────────────────────────────────────────────────────────────────────── */
 
 function textOf(el: cheerio.Cheerio<AnyNode>): string {
   return normalizeEffectText(el.text());
 }
 
-function parseIntOrNull(raw: string | undefined): number | null {
-  if (!raw) return null;
+/**
+ * Read a `<div class="cost"><h3>コスト</h3>4</div>` style stat. Returns
+ * null when the `<h3>` doesn't match the expected label (so we can
+ * disambiguate `<div class="cost">` between cost and life).
+ */
+function pickStatLabelled(
+  node: cheerio.Cheerio<AnyNode>,
+  selector: string,
+  expectedLabel: string,
+): number | null {
+  const el = node.find(selector).first();
+  if (el.length === 0) return null;
+  const label = el.find("h3").first().text().trim();
+  if (!label.includes(expectedLabel)) return null;
+  return parseStat(stripLabel(el));
+}
+
+function pickStat(node: cheerio.Cheerio<AnyNode>, selector: string): number | null {
+  const el = node.find(selector).first();
+  if (el.length === 0) return null;
+  return parseStat(stripLabel(el));
+}
+
+function parseStat(raw: string): number | null {
   const m = raw.match(/-?\d+/);
   return m ? Number(m[0]) : null;
+}
+
+/**
+ * Take the text content of an element after removing its `<h3>` label.
+ * Bandai consistently uses `<h3>` as the label and the value as the
+ * trailing text node (or, for attribute, an `<img>`).
+ */
+function stripLabel(el: cheerio.Cheerio<AnyNode>): string {
+  if (el.length === 0) return "";
+  const clone = el.clone();
+  clone.find("h3").remove();
+  return normalizeEffectText(clone.text());
+}
+
+/**
+ * Extract text content while preserving `<br>` as newlines so that
+ * multi-line effect text (e.g. two timing markers chained on one card)
+ * stays readable in the UI and the FTS index. Cheerio's default `.text()`
+ * collapses `<br>` into nothing.
+ */
+function extractTextWithBreaks(el: cheerio.Cheerio<AnyNode>): string {
+  if (el.length === 0) return "";
+  const clone = el.clone();
+  clone.find("h3").remove();
+  clone.find("br").replaceWith("\n");
+  return clone.text();
 }

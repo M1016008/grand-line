@@ -19,20 +19,42 @@ import { chromium } from "playwright";
 
 import type { RawSetFixture } from "./types";
 
-/** Maps set codes to Bandai's internal `series` query param. */
+/**
+ * Maps set codes to Bandai's internal `series` query param.
+ *
+ * Sourced from the live `<select id="series">` dropdown on
+ * https://www.onepiece-cardgame.com/cardlist/ as of 2026-05-08.
+ * Booster pack scheme: 5501NN (NN = pack number), Starter: 5500NN,
+ * Extra Booster: 5502NN, Premium Booster: 5503NN.
+ *
+ * If a new pack ships, re-fetch the cardlist root and inspect the dropdown
+ * before adding here — Bandai sometimes assigns non-sequential ids.
+ */
 const SERIES_PARAM: Record<string, string> = {
-  // TODO(verify): these IDs need to be confirmed by inspecting the live
-  // dropdown on https://www.onepiece-cardgame.com/cardlist/. The keys
-  // below are the canonical card ID prefixes; the values are placeholders
-  // pulled from public references and need a sanity-check pass.
-  OP01: "569101",
-  OP02: "569102",
-  OP03: "569103",
-  OP04: "569104",
-  OP05: "569105",
-  ST01: "569001",
-  ST02: "569002",
-  ST03: "569003",
+  OP01: "550101",
+  OP02: "550102",
+  OP03: "550103",
+  OP04: "550104",
+  OP05: "550105",
+  OP06: "550106",
+  OP07: "550107",
+  OP08: "550108",
+  OP09: "550109",
+  OP10: "550110",
+  OP11: "550111",
+  OP12: "550112",
+  OP13: "550113",
+  OP14: "550114",
+  OP15: "550115",
+  ST01: "550001",
+  ST02: "550002",
+  ST03: "550003",
+  EB01: "550201",
+  EB02: "550202",
+  EB03: "550203",
+  EB04: "550204",
+  PRB01: "550301",
+  PRB02: "550302",
 };
 
 const BASE_URL = "https://www.onepiece-cardgame.com/cardlist/";

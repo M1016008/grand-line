@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "3ae3367b-a6e1-4ff6-b60a-fba745ef4405",
+  "id": "e45a5aad-b641-42ae-b196-84b78839abc8",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "card_sets": {
@@ -503,9 +503,9 @@
           "name": "ck_leader_has_life",
           "value": "(\"cards\".\"card_type\" != 'LEADER') OR (\"cards\".\"life\" IS NOT NULL AND \"cards\".\"life\" >= 0)"
         },
-        "ck_leader_or_character_has_power": {
-          "name": "ck_leader_or_character_has_power",
-          "value": "(\"cards\".\"card_type\" NOT IN ('LEADER', 'CHARACTER')) OR (\"cards\".\"power\" IS NOT NULL)"
+        "ck_leader_has_power": {
+          "name": "ck_leader_has_power",
+          "value": "(\"cards\".\"card_type\" != 'LEADER') OR (\"cards\".\"power\" IS NOT NULL)"
         },
         "ck_event_has_no_power": {
           "name": "ck_event_has_no_power",

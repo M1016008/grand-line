@@ -67,7 +67,7 @@ CREATE TABLE `cards` (
 	`updated_at` integer DEFAULT (unixepoch()) NOT NULL,
 	FOREIGN KEY (`set_code`) REFERENCES `card_sets`(`code`) ON UPDATE no action ON DELETE restrict,
 	CONSTRAINT "ck_leader_has_life" CHECK(("cards"."card_type" != 'LEADER') OR ("cards"."life" IS NOT NULL AND "cards"."life" >= 0)),
-	CONSTRAINT "ck_leader_or_character_has_power" CHECK(("cards"."card_type" NOT IN ('LEADER', 'CHARACTER')) OR ("cards"."power" IS NOT NULL)),
+	CONSTRAINT "ck_leader_has_power" CHECK(("cards"."card_type" != 'LEADER') OR ("cards"."power" IS NOT NULL)),
 	CONSTRAINT "ck_event_has_no_power" CHECK(("cards"."card_type" != 'EVENT') OR ("cards"."power" IS NULL AND "cards"."life" IS NULL))
 );
 --> statement-breakpoint

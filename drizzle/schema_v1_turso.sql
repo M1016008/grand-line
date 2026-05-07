@@ -50,8 +50,10 @@ CREATE TABLE cards (
   CONSTRAINT ck_leader_has_life CHECK (
     card_type != 'LEADER' OR (life IS NOT NULL AND life >= 0)
   ),
-  CONSTRAINT ck_leader_or_character_has_power CHECK (
-    card_type NOT IN ('LEADER', 'CHARACTER') OR power IS NOT NULL
+  -- Counter-only characters (お玉 / 光月モモの助 / 小紫) have no printed
+  -- power, so this rule covers leaders only.
+  CONSTRAINT ck_leader_has_power CHECK (
+    card_type != 'LEADER' OR power IS NOT NULL
   ),
   CONSTRAINT ck_event_has_no_power CHECK (
     card_type != 'EVENT' OR (power IS NULL AND life IS NULL)

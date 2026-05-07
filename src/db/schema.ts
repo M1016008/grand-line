@@ -93,9 +93,12 @@ export const cards = sqliteTable(
       "ck_leader_has_life",
       sql`(${t.cardType} != 'LEADER') OR (${t.life} IS NOT NULL AND ${t.life} >= 0)`,
     ),
+    // Leaders always print a power. Characters do *not*: OPTCG has
+    // counter-only characters (お玉 / 光月モモの助 / 小紫 etc.) with no
+    // printed power. So the rule is leader-only.
     check(
-      "ck_leader_or_character_has_power",
-      sql`(${t.cardType} NOT IN ('LEADER', 'CHARACTER')) OR (${t.power} IS NOT NULL)`,
+      "ck_leader_has_power",
+      sql`(${t.cardType} != 'LEADER') OR (${t.power} IS NOT NULL)`,
     ),
     check(
       "ck_event_has_no_power",
