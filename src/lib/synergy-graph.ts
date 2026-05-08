@@ -22,11 +22,11 @@
 
 import {
   forceCenter,
-  forceCollide,
   forceLink,
   forceManyBody,
-  forceRadial,
   forceSimulation,
+  forceX,
+  forceY,
 } from "d3-force";
 
 import type { CardListItem } from "@/lib/cards";
@@ -78,16 +78,9 @@ interface BuildOptions {
 
 const DEFAULT_WIDTH = 720;
 const DEFAULT_HEIGHT = 560;
-/** Force mode gets a roomier internal canvas — 340+ nodes need space to
- *  spread out radially. The SVG viewBox scales this back into the
- *  display container so each node renders smaller but doesn't overlap. */
-const FORCE_WIDTH = 1400;
-const FORCE_HEIGHT = 1000;
 const DEFAULT_MIN_STRENGTH = 2.5;
 const DEFAULT_MAX_EDGES_PER_NODE = 8;
-const STATIC_TICKS = 420;
-/** Effective collision radius in internal coords — node disc + label + breathing room. */
-const COLLISION_R = 36;
+const STATIC_TICKS = 280;
 
 /* ──────────────────────────────────────────────────────────────────────── */
 /* Pre-processing                                                            */
@@ -115,18 +108,14 @@ function normalize(
   // Drop weak edges first.
   const filtered = edges.filter((e) => e.strength >= minStrength);
 
-  // Cap edges per node — keep the strongest ones. The leader is exempt:
-  // we want every direct-synergy partner visible, even if the leader
-  // itself ends up with 100+ edges in the force view.
+  // Cap edges per node — keep the strongest ones.
   const perNodeCounts = new Map<string, number>();
   const sorted = [...filtered].sort((a, b) => b.strength - a.strength);
   const capped: RuleSynergy[] = [];
   for (const e of sorted) {
     const fromCount = perNodeCounts.get(e.fromCardId) ?? 0;
     const toCount = perNodeCounts.get(e.toCardId) ?? 0;
-    const fromLimited = e.fromCardId !== leader.id && fromCount >= cap;
-    const toLimited = e.toCardId !== leader.id && toCount >= cap;
-    if (fromLimited || toLimited) continue;
+    if (fromCount >= cap || toCount >= cap) continue;
     capped.push(e);
     perNodeCounts.set(e.fromCardId, fromCount + 1);
     perNodeCounts.set(e.toCardId, toCount + 1);
@@ -245,56 +234,9 @@ export function buildForceLayout(
   edges: RuleSynergy[],
   opts: BuildOptions = {},
 ): LaidOutGraph {
-  // Force mode gets a bigger canvas regardless of caller, since 100+
-  // nodes need it. Compass keeps the smaller default.
-  //
-  // We also lift the per-node edge cap. The default (8) makes sense for
-  // *partner* cards but it caps the LEADER too — which collapses the
-  // view back to 8 partners. We want every partner the leader directly
-  // synergises with to be visible, so the cap is set to something
-  // effectively unlimited here.
-  const forceOpts: BuildOptions = {
-    width: opts.width ?? FORCE_WIDTH,
-    height: opts.height ?? FORCE_HEIGHT,
-    minStrength: opts.minStrength,
-    // Per-partner cap of 6 keeps each non-leader node visually clean —
-    // any one partner contributes at most 6 lines (incl. its own
-    // leader-edge). The leader itself is exempt inside `normalize`.
-    maxEdgesPerNode: opts.maxEdgesPerNode ?? 6,
-  };
-  const norm = normalize(leader, pool, edges, forceOpts);
-
-  // Detail mode shows the leader's full directly-connected pool.
-  // Indirect-only cards (those that share edges with partners but not the
-  // leader itself) are dropped — keeping them in led to a 340-node grid
-  // that the user found too dense. The compass philosophy is preserved:
-  // every card on screen is a card that synergises with the leader.
-  const leaderStrength = new Map<string, number>();
-  for (const e of norm.edges) {
-    let other: string | null = null;
-    if (e.fromCardId === norm.leader.id) other = e.toCardId;
-    else if (e.toCardId === norm.leader.id) other = e.fromCardId;
-    if (!other) continue;
-    const cur = leaderStrength.get(other) ?? 0;
-    if (e.strength > cur) leaderStrength.set(other, e.strength);
-  }
-  const keepIds = new Set<string>([norm.leader.id, ...leaderStrength.keys()]);
-  const cards = norm.cards.filter((c) => keepIds.has(c.id));
-  const filteredEdges = norm.edges.filter(
-    (e) => keepIds.has(e.fromCardId) && keepIds.has(e.toCardId),
-  );
+  const norm = normalize(leader, pool, edges, opts);
   const cx = norm.width / 2;
   const cy = norm.height / 2;
-
-  const innerR = 140;
-  const outerR = Math.min(norm.width, norm.height) / 2 - 70;
-  const desiredRadius = (id: string) => {
-    if (id === norm.leader.id) return 0;
-    const s = leaderStrength.get(id) ?? 0;
-    // strength 10 → innerR, strength 0 → outerR
-    const t = 1 - Math.min(1, Math.max(0, s / 10));
-    return innerR + t * (outerR - innerR);
-  };
 
   // d3-force mutates the node objects in-place; we use a separate copy
   // and copy the resulting (x, y) onto our return value so the caller
@@ -311,40 +253,24 @@ export function buildForceLayout(
   };
   type SimLink = { source: string; target: string; weight: number };
 
-  // Distribute initial angles evenly around the leader so the simulation
-  // doesn't settle into a half-circle. We sort partners by leader-edge
-  // strength (strongest first) so similar-strength cards end up adjacent
-  // in their ring — visually pleasant and stable across re-renders.
-  const partners = cards.filter((c) => c.id !== norm.leader.id);
-  partners.sort((a, b) => {
-    const sa = leaderStrength.get(a.id) ?? 0;
-    const sb = leaderStrength.get(b.id) ?? 0;
-    if (sa !== sb) return sb - sa;
-    return a.id.localeCompare(b.id);
-  });
-  const angleByPartner = new Map<string, number>();
-  for (let i = 0; i < partners.length; i++) {
-    angleByPartner.set(
-      partners[i].id,
-      (i / partners.length) * 2 * Math.PI - Math.PI / 2,
-    );
-  }
+  const simNodes: SimNode[] = norm.cards.map((card) => ({
+    id: card.id,
+    isLeader: card.id === norm.leader.id,
+    // Spread initial positions on a circle so the simulation has room to work.
+    x:
+      card.id === norm.leader.id
+        ? cx
+        : cx + Math.cos(hash(card.id)) * 180,
+    y:
+      card.id === norm.leader.id
+        ? cy
+        : cy + Math.sin(hash(card.id)) * 180,
+    // Pin the leader.
+    fx: card.id === norm.leader.id ? cx : null,
+    fy: card.id === norm.leader.id ? cy : null,
+  }));
 
-  const simNodes: SimNode[] = cards.map((card) => {
-    const isLeader = card.id === norm.leader.id;
-    const r = desiredRadius(card.id);
-    const angle = angleByPartner.get(card.id) ?? 0;
-    return {
-      id: card.id,
-      isLeader,
-      x: isLeader ? cx : cx + Math.cos(angle) * r,
-      y: isLeader ? cy : cy + Math.sin(angle) * r,
-      fx: isLeader ? cx : null,
-      fy: isLeader ? cy : null,
-    };
-  });
-
-  const simLinks: SimLink[] = filteredEdges.map((e) => ({
+  const simLinks: SimLink[] = norm.edges.map((e) => ({
     source: e.fromCardId,
     target: e.toCardId,
     weight: e.strength / 10,
@@ -352,41 +278,24 @@ export function buildForceLayout(
 
   // d3-force types model `links` as taking nodes-or-ids; we feed strings,
   // which d3 resolves against our nodes by `id`.
-  //
-  // Forces, in priority order:
-  //   - radial: pulls each node to its leader-strength-derived ring.
-  //     This is the dominant force — the "compass" feel of the layout
-  //     comes from here.
-  //   - collide: hard no-overlap constraint with COLLISION_R radius.
-  //     Without this, the perimeter just stacks card thumbnails.
-  //   - charge: mild repulsion to break ties when collide doesn't fire.
-  //   - link: edge-distance bias so paired cards prefer to be near each
-  //     other along their ring (small effect since radial dominates).
-  //   - center: keeps stragglers from drifting off-canvas.
   const sim = forceSimulation(simNodes as never)
     .force(
       "link",
       forceLink(simLinks)
         .id((d) => (d as SimNode).id)
         .distance((l) => 80 + (1 - (l as SimLink).weight) * 140)
-        .strength((l) => 0.05 + (l as SimLink).weight * 0.15),
+        .strength((l) => 0.2 + (l as SimLink).weight * 0.7),
     )
-    .force("charge", forceManyBody().strength(-160))
-    .force(
-      "collide",
-      forceCollide<SimNode>().radius(COLLISION_R).strength(0.95).iterations(2),
-    )
-    .force(
-      "radial",
-      forceRadial<SimNode>((d) => desiredRadius(d.id), cx, cy).strength(0.7),
-    )
-    .force("center", forceCenter(cx, cy).strength(0.02))
+    .force("charge", forceManyBody().strength(-280))
+    .force("x", forceX(cx).strength(0.04))
+    .force("y", forceY(cy).strength(0.04))
+    .force("center", forceCenter(cx, cy))
     .stop();
 
   for (let i = 0; i < STATIC_TICKS; i++) sim.tick();
 
   const nodeById = new Map(simNodes.map((n) => [n.id, n]));
-  const cardById = new Map(cards.map((c) => [c.id, c]));
+  const cardById = new Map(norm.cards.map((c) => [c.id, c]));
 
   const nodes: GraphNode[] = simNodes.map((n) => ({
     id: n.id,
@@ -396,7 +305,7 @@ export function buildForceLayout(
     y: clamp(n.y, 30, norm.height - 30),
   }));
 
-  const links: GraphLink[] = filteredEdges.map((e) => {
+  const links: GraphLink[] = norm.edges.map((e) => {
     const linkObj = toLink(e);
     // Replace source/target with resolved ids — they may already be strings,
     // but if d3 mutated them into refs we want plain strings out.
@@ -415,6 +324,14 @@ export function buildForceLayout(
 /* ──────────────────────────────────────────────────────────────────────── */
 /* helpers                                                                   */
 /* ──────────────────────────────────────────────────────────────────────── */
+
+function hash(id: string): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) {
+    h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  }
+  return (h / 4294967296) * Math.PI * 2;
+}
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));

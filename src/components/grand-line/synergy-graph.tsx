@@ -125,10 +125,7 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
       <div className="border-border/30 bg-background/40 relative overflow-hidden rounded-lg border">
         <svg
           viewBox={`0 0 ${graph.width} ${graph.height}`}
-          className={cn(
-            "w-full select-none",
-            mode === "compass" ? "h-[560px]" : "h-[760px]",
-          )}
+          className="h-[560px] w-full select-none"
           role="img"
           aria-label={`${leader.name} を中心としたシナジーグラフ`}
         >
