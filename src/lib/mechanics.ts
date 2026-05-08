@@ -39,6 +39,9 @@ export const MECHANICS = [
   "EndOfTurn", // ターン終了時
   "EndOfYourTurn", // 自分のターン終了時
 
+  // Event-card timing
+  "MainPhase", // [メイン] — main-phase event activation
+
   // Activated abilities
   "ActivateMain", // 起動メイン
   "ActivateOpponentTurn", // 起動相手のターン
@@ -46,6 +49,7 @@ export const MECHANICS = [
   // DON-related
   "DonAttach", // ドン!! 装着 (cost reduction or buff requiring attached DON!!)
   "DonActivate", // ドン!! アクティブ化
+  "DonAttached", // [ドン!!×N] — static ability gated on N attached DON!!s
 
   // Card movement / state
   "Search", // サーチ / 山札からカードを公開
@@ -102,6 +106,12 @@ const RULES: ReadonlyArray<{ id: Mechanic; pattern: RegExp }> = [
     pattern: /(?<!自分の)(?<!相手の)ターン(?:の)?終了時/i,
   },
 
+  // Event-card timing — `[メイン]` is the activation marker on most events.
+  // We require it not to be inside `[起動メイン]` (the activated-ability
+  // marker handled below); the substring `[メイン]` does not occur inside
+  // `[起動メイン]` so a plain match works.
+  { id: "MainPhase", pattern: /\[メイン\]|\[Main\]/i },
+
   // Activated abilities
   {
     id: "ActivateMain",
@@ -122,6 +132,10 @@ const RULES: ReadonlyArray<{ id: Mechanic; pattern: RegExp }> = [
     pattern:
       /ドン!![\s　]*アクティブ化|アクティブにしたドン!!|(?:自分の)?ドン!![^。]{0,12}アクティブに(?:する|して)/i,
   },
+  // [ドン!!×N] — static ability that's only "on" while N DONs are
+  // attached. Surfaced as its own mechanic so the deck builder /
+  // synergy detector can highlight DON-scaling cards.
+  { id: "DonAttached", pattern: /\[ドン!!×\d+\]/ },
 
   // Card movement
   {

@@ -126,6 +126,35 @@ test("PowerBuff matches 全角プラス too", () => {
 });
 
 /* ──────────────────────────────────────────────────────────────────────── */
+/* Event timing + DON gating                                                 */
+/* ──────────────────────────────────────────────────────────────────────── */
+
+test("[メイン] event activation → MainPhase, NOT ActivateMain", () => {
+  const m = extractMechanics("[メイン] 相手のキャラ1枚を選び、KOする。");
+  assert.ok(m.includes("MainPhase"));
+  assert.ok(!m.includes("ActivateMain"));
+});
+
+test("[起動メイン] does not falsely trigger MainPhase", () => {
+  const m = extractMechanics(
+    "[起動メイン] [ターン1回] 自分のデッキの上から1枚を見る。",
+  );
+  assert.ok(m.includes("ActivateMain"));
+  assert.ok(!m.includes("MainPhase"));
+});
+
+test("[ドン!!×N] static gate → DonAttached", () => {
+  const m = extractMechanics(
+    "[ドン!!×1] このキャラは、相手のアクティブのキャラにもアタックできる。",
+  );
+  assert.ok(m.includes("DonAttached"));
+  // Should not falsely fire DonAttach (the keyword for ドン!! 装着) or
+  // DonActivate (which needs アクティブ化).
+  assert.ok(!m.includes("DonAttach"));
+  assert.ok(!m.includes("DonActivate"));
+});
+
+/* ──────────────────────────────────────────────────────────────────────── */
 /* Triggers + nullish input                                                 */
 /* ──────────────────────────────────────────────────────────────────────── */
 
