@@ -309,12 +309,23 @@ export function DeckBuilder({
                 {sortedEntries.map(({ card, count }) => (
                   <li
                     key={card.id}
-                    className="hover:bg-accent/30 flex items-center justify-between rounded-md px-2 py-1 text-xs"
+                    className="hover:bg-accent/30 flex items-center gap-2 rounded-md px-2 py-1 text-xs"
                   >
+                    <div className="border-border/30 bg-card/60 relative aspect-[3/4] w-6 shrink-0 overflow-hidden rounded-sm border">
+                      {card.imageUrlJp ? (
+                        /* eslint-disable-next-line @next/next/no-img-element */
+                        <img
+                          src={proxiedCardImage(card.imageUrlJp)!}
+                          alt=""
+                          loading="lazy"
+                          className="h-full w-full object-cover"
+                        />
+                      ) : null}
+                    </div>
                     <span className="text-muted-foreground font-mono">
                       {card.cost !== null ? `c${card.cost}` : "  "}
                     </span>
-                    <span className="mx-2 flex-1 truncate">{card.name}</span>
+                    <span className="flex-1 truncate">{card.name}</span>
                     <span className="font-mono">×{count}</span>
                   </li>
                 ))}

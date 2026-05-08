@@ -13,6 +13,7 @@ import {
   type LayoutMode,
 } from "@/lib/synergy-graph";
 import type { CardListItem } from "@/lib/cards";
+import { proxiedCardImage } from "@/lib/img";
 import type { RuleSynergy } from "@/lib/synergy-rules";
 
 interface SynergyGraphProps {
@@ -100,6 +101,15 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
           role="img"
           aria-label={`${leader.name} を中心としたシナジーグラフ`}
         >
+          {/* Reusable circular clip — used to mask each card thumbnail
+              into the node's disc. clipPathUnits=objectBoundingBox lets
+              the same clip apply to images of any size. */}
+          <defs>
+            <clipPath id="synergy-node-circle" clipPathUnits="objectBoundingBox">
+              <circle cx="0.5" cy="0.5" r="0.5" />
+            </clipPath>
+          </defs>
+
           {/* Edges first so nodes paint on top. */}
           <g>
             {graph.links.map((link) => {
@@ -163,6 +173,11 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
                   style={{ opacity: dim ? 0.35 : 1 }}
                 >
                   <Link href={`/cards/${node.id}`}>
+                    <title>
+                      {node.card.name} ({node.card.id})
+                    </title>
+                    {/* Outer ring — colour cues whether this is the leader
+                        or a coloured archetype card. */}
                     <circle
                       r={r + 4}
                       fill="var(--color-background)"
@@ -178,26 +193,41 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
                           : undefined,
                       }}
                     />
-                    <circle
-                      r={r}
-                      fill={node.isLeader ? "var(--color-primary)" : "var(--color-card)"}
-                      fillOpacity={node.isLeader ? 0.18 : 0.85}
-                    />
+                    {node.card.imageUrlJp ? (
+                      <image
+                        href={proxiedCardImage(node.card.imageUrlJp)!}
+                        x={-r}
+                        y={-r}
+                        width={r * 2}
+                        height={r * 2}
+                        preserveAspectRatio="xMidYMid slice"
+                        clipPath="url(#synergy-node-circle)"
+                      />
+                    ) : (
+                      <>
+                        <circle
+                          r={r}
+                          fill={node.isLeader ? "var(--color-primary)" : "var(--color-card)"}
+                          fillOpacity={node.isLeader ? 0.18 : 0.85}
+                        />
+                        <text
+                          textAnchor="middle"
+                          y={-2}
+                          fontSize={node.isLeader ? 11 : 9}
+                          fill="var(--color-foreground)"
+                          fontFamily="var(--font-display), serif"
+                          fontWeight={600}
+                          style={{ pointerEvents: "none" }}
+                        >
+                          {clipText(node.card.name, node.isLeader ? 8 : 6)}
+                        </text>
+                      </>
+                    )}
+                    {/* Card id label below the disc. */}
                     <text
                       textAnchor="middle"
-                      y={node.isLeader ? -2 : -2}
-                      fontSize={node.isLeader ? 11 : 9}
-                      fill="var(--color-foreground)"
-                      fontFamily="var(--font-display), serif"
-                      fontWeight={600}
-                      style={{ pointerEvents: "none" }}
-                    >
-                      {clipText(node.card.name, node.isLeader ? 8 : 6)}
-                    </text>
-                    <text
-                      textAnchor="middle"
-                      y={node.isLeader ? 12 : 10}
-                      fontSize={node.isLeader ? 9 : 8}
+                      y={r + 14}
+                      fontSize={node.isLeader ? 10 : 9}
                       fill="var(--color-muted-foreground)"
                       fontFamily="var(--font-mono), monospace"
                       style={{ pointerEvents: "none" }}

@@ -6,6 +6,7 @@ import { SourceBadge } from "@/components/grand-line/source-badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { listCards } from "@/lib/cards";
+import { proxiedCardImage } from "@/lib/img";
 
 export const dynamic = "force-dynamic";
 
@@ -37,44 +38,57 @@ export default async function LeaderPickerPage() {
                 className="block focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
               >
                 <Card className="hover:border-primary/40 group h-full transition">
-                  <CardContent className="flex flex-col gap-2 p-4">
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <p className="text-muted-foreground font-mono text-[11px] tracking-widest uppercase">
-                          {leader.id} · {leader.setCode}
-                        </p>
-                        <p className="text-foreground text-sm font-semibold">
-                          {leader.name}
-                        </p>
+                  <CardContent className="flex h-full gap-3 p-3">
+                    <div className="border-border/30 bg-card/60 relative aspect-[3/4] w-20 shrink-0 overflow-hidden rounded-md border">
+                      {leader.imageUrlJp ? (
+                        /* eslint-disable-next-line @next/next/no-img-element */
+                        <img
+                          src={proxiedCardImage(leader.imageUrlJp)!}
+                          alt={leader.name}
+                          loading="lazy"
+                          className="h-full w-full object-cover"
+                        />
+                      ) : null}
+                    </div>
+                    <div className="flex min-w-0 flex-1 flex-col gap-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-muted-foreground font-mono text-[11px] tracking-widest uppercase">
+                            {leader.id} · {leader.setCode}
+                          </p>
+                          <p className="text-foreground line-clamp-2 text-sm font-semibold">
+                            {leader.name}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-1">
+                          {leader.colors.map((c) => (
+                            <ColorChip key={c} color={c} />
+                          ))}
+                        </div>
                       </div>
-                      <div className="flex shrink-0 flex-wrap gap-1">
-                        {leader.colors.map((c) => (
-                          <ColorChip key={c} color={c} />
+                      <div className="text-muted-foreground flex flex-wrap gap-1 text-[11px]">
+                        {leader.life !== null ? (
+                          <Badge variant="outline" className="font-mono">
+                            life {leader.life}
+                          </Badge>
+                        ) : null}
+                        {leader.power !== null ? (
+                          <Badge variant="outline" className="font-mono">
+                            pwr {leader.power}
+                          </Badge>
+                        ) : null}
+                        {leader.features.slice(0, 2).map((f) => (
+                          <Badge key={f} variant="secondary" className="text-[10px]">
+                            {f}
+                          </Badge>
                         ))}
                       </div>
+                      <SourceBadge
+                        source={leader.source}
+                        verified={leader.verified}
+                        className="mt-auto self-start"
+                      />
                     </div>
-                    <div className="text-muted-foreground flex flex-wrap gap-1 text-[11px]">
-                      {leader.life !== null ? (
-                        <Badge variant="outline" className="font-mono">
-                          life {leader.life}
-                        </Badge>
-                      ) : null}
-                      {leader.power !== null ? (
-                        <Badge variant="outline" className="font-mono">
-                          pwr {leader.power}
-                        </Badge>
-                      ) : null}
-                      {leader.features.slice(0, 2).map((f) => (
-                        <Badge key={f} variant="secondary" className="text-[10px]">
-                          {f}
-                        </Badge>
-                      ))}
-                    </div>
-                    <SourceBadge
-                      source={leader.source}
-                      verified={leader.verified}
-                      className="mt-1 self-start"
-                    />
                   </CardContent>
                 </Card>
               </Link>

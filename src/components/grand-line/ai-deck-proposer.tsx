@@ -6,9 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { CardListItem } from "@/lib/cards";
+import { proxiedCardImage } from "@/lib/img";
 import { useDeckDraft } from "@/stores/deck";
 
 interface AiDeckProposerProps {
@@ -158,27 +158,40 @@ export function AiDeckProposer({ leader, pool }: AiDeckProposerProps) {
             ) : null}
 
             <Section label={`提案デッキ (${proposal.cards.length} 種 / ${proposal.cards.reduce((a, b) => a + b.count, 0)} 枚)`}>
-              <div className="flex flex-wrap gap-1">
+              <ul className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
                 {proposal.cards.map((c) => {
                   const card = poolById.get(c.cardId);
                   return (
-                    <Badge
+                    <li
                       key={c.cardId}
-                      variant="outline"
                       className={cn(
-                        "font-mono text-[10px]",
+                        "border-border/30 bg-background/40 flex items-center gap-2 rounded-md border p-1.5",
                         !card && "border-destructive/60 text-destructive",
                       )}
                     >
-                      {c.cardId}
-                      <span className="text-muted-foreground ml-1">×{c.count}</span>
-                      {card ? (
-                        <span className="ml-1 max-w-32 truncate">{card.name}</span>
-                      ) : null}
-                    </Badge>
+                      <div className="border-border/30 bg-card/60 relative aspect-[3/4] w-7 shrink-0 overflow-hidden rounded-sm border">
+                        {card?.imageUrlJp ? (
+                          /* eslint-disable-next-line @next/next/no-img-element */
+                          <img
+                            src={proxiedCardImage(card.imageUrlJp)!}
+                            alt=""
+                            loading="lazy"
+                            className="h-full w-full object-cover"
+                          />
+                        ) : null}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-muted-foreground font-mono text-[9px]">
+                          {c.cardId} ×{c.count}
+                        </div>
+                        {card ? (
+                          <div className="truncate text-[10px]">{card.name}</div>
+                        ) : null}
+                      </div>
+                    </li>
                   );
                 })}
-              </div>
+              </ul>
             </Section>
 
             {proposal.warnings.length > 0 ? (

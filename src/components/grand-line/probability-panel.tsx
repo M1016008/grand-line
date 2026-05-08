@@ -13,6 +13,7 @@ import {
 } from "recharts";
 
 import { Button } from "@/components/ui/button";
+import { proxiedCardImage } from "@/lib/img";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -272,12 +273,23 @@ function GroupRow({
             type="button"
             onClick={() => onToggle(card.id)}
             className={cn(
-              "rounded-full border px-2 py-0.5 text-[10px] tracking-wide transition",
+              "inline-flex items-center gap-1 rounded-full border py-0 pr-2 pl-0.5 text-[10px] tracking-wide transition",
               inGroup.has(card.id)
                 ? "border-primary/40 bg-primary/15 text-foreground"
                 : "border-border/30 bg-card/40 text-muted-foreground hover:bg-accent/40",
             )}
           >
+            <span className="border-border/40 bg-card/60 relative aspect-[3/4] inline-block h-4 w-3 shrink-0 overflow-hidden rounded-[2px] border">
+              {card.imageUrlJp ? (
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img
+                  src={proxiedCardImage(card.imageUrlJp)!}
+                  alt=""
+                  loading="lazy"
+                  className="h-full w-full object-cover"
+                />
+              ) : null}
+            </span>
             {card.name}
           </button>
         ))}
