@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 
 const NAV = [
   { href: "/cards" as const, label: "カード" },
+  { href: "/sets" as const, label: "セット" },
   { href: "/decks" as const, label: "デッキ" },
   { href: "/synergy" as const, label: "シナジー" },
   { href: "/probability" as const, label: "確率", soon: true },

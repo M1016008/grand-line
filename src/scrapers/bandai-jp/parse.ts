@@ -106,7 +106,10 @@ function parseCardNode(
   const rarity = textOf($(infoSpans[1])) || null;
   const typeText = textOf($(infoSpans[2]));
 
-  const idMatch = idRaw.match(/([A-Z]{2,4}\d{2,3}-\d{3,4})/);
+  // Bandai card ids:
+  //   OP01-001, ST29-001, EB04-001, PRB02-001 (set-anchored)
+  //   P-079, P-088                              (promo grab-bag, 1-letter set)
+  const idMatch = idRaw.match(/([A-Z]{1,4}\d{0,3}-\d{3,4})/);
   if (!idMatch) throw new Error(`Could not parse card id from "${idRaw}"`);
   const id = idMatch[1]; // OP01-001 (parallels' `_p2` etc never appear in the span text)
   const setCode = id.split("-")[0];

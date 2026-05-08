@@ -114,6 +114,11 @@ export const SET_NAMES_JP: Record<string, string> = {
   EB04: "エクストラブースター EGGHEAD CRISIS【EB-04】",
   PRB01: "プレミアムブースター ONE PIECE CARD THE BEST【PRB-01】",
   PRB02: "プレミアムブースター ONE PIECE CARD THE BEST vol.2【PRB-02】",
+  // Pseudo-set: promo cards have ids like P-079 with no parent pack.
+  // We never *scrape* this set directly (it's not in `SERIES_PARAM`),
+  // but the upsert layer creates the entry on demand the first time a
+  // P-NNN card is parsed out of a reprint pack.
+  P: "プロモーションカード",
 };
 
 const BASE_URL = "https://www.onepiece-cardgame.com/cardlist/";

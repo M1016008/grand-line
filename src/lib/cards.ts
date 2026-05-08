@@ -14,7 +14,12 @@ import "server-only";
 import { and, asc, eq, like, or, sql, type SQL } from "drizzle-orm";
 
 import { db } from "@/db";
-import { cardSets, cardTranslations, cards } from "@/db/schema";
+import {
+  cardSetMembership,
+  cardSets,
+  cardTranslations,
+  cards,
+} from "@/db/schema";
 import type { CardTranslationSource } from "@/db/schema";
 import { MOCK_CARDS, type MockCard } from "@/lib/mock-cards";
 
@@ -43,12 +48,22 @@ export interface CardListItem {
   verified: boolean;
 }
 
+export interface CardSetMembership {
+  code: string;
+  nameJa: string;
+  setType: string;
+  /** Whether this is the canonical owning set (matches cards.set_code). */
+  canonical: boolean;
+}
+
 export interface CardDetail extends CardListItem {
   effectText: string | null;
   triggerText: string | null;
   flavorText: string | null;
   sourceUrl: string | null;
   fetchedAt: Date | null;
+  /** All sets this card has appeared in (canonical first, then reprints). */
+  memberships: CardSetMembership[];
 }
 
 export interface CardListResult {
@@ -154,7 +169,14 @@ async function listFromDb(filters: CardListFilters): Promise<CardListResult> {
     // the user-facing string type satisfies Drizzle's narrow signature.
     conditions.push(eq(cards.cardType, filters.cardType as "LEADER"));
   }
-  if (filters.setCode) conditions.push(eq(cards.setCode, filters.setCode));
+  if (filters.setCode) {
+    // Filter via the membership join — this captures reprints
+    // (e.g. PRB02 includes the card even though its canonical set_code
+    // points to the original OP01 print).
+    conditions.push(
+      sql`EXISTS (SELECT 1 FROM card_set_membership m WHERE m.card_id = ${cards.id} AND m.set_code = ${filters.setCode})`,
+    );
+  }
   if (typeof filters.cost === "number") conditions.push(eq(cards.cost, filters.cost));
 
   // colors / features / mechanics are JSON arrays stored as TEXT. Until the
@@ -303,6 +325,34 @@ async function getFromDb(id: string, language: string): Promise<CardDetail | nul
 
   if (row.length === 0) return null;
   const r = row[0];
+
+  // Fetch every set this card has appeared in (canonical + reprints).
+  const memberRows = await db
+    .select({
+      code: cardSets.code,
+      nameJa: cardSets.nameJa,
+      setType: cardSets.setType,
+    })
+    .from(cardSetMembership)
+    .innerJoin(cardSets, eq(cardSetMembership.setCode, cardSets.code))
+    .where(eq(cardSetMembership.cardId, id))
+    .orderBy(asc(cardSets.code));
+
+  const canonical = r.setCode;
+  const memberships: CardSetMembership[] = memberRows
+    .map((m) => ({ ...m, canonical: m.code === canonical }))
+    .sort((a, b) => Number(b.canonical) - Number(a.canonical) || a.code.localeCompare(b.code));
+  // Make sure the canonical set is always present even if the membership
+  // table hasn't been populated yet (mock-mode or pre-migration data).
+  if (!memberships.some((m) => m.code === canonical)) {
+    memberships.unshift({
+      code: canonical,
+      nameJa: canonical,
+      setType: "booster",
+      canonical: true,
+    });
+  }
+
   return {
     id: r.id,
     setCode: r.setCode,
@@ -319,6 +369,7 @@ async function getFromDb(id: string, language: string): Promise<CardDetail | nul
     hasTrigger: r.hasTrigger,
     imageUrlJp: r.imageUrlJp,
     mechanics: (r.mechanics ?? []) as string[],
+    memberships,
     effectText: r.effectText,
     triggerText: r.triggerText,
     flavorText: r.flavorText,
@@ -360,6 +411,9 @@ function getFromMock(id: string): CardDetail | null {
     flavorText: null,
     sourceUrl: null,
     fetchedAt: null,
+    memberships: [
+      { code: c.setCode, nameJa: c.setCode, setType: "booster", canonical: true },
+    ],
   };
 }
 

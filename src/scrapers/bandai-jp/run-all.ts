@@ -84,9 +84,9 @@ async function main() {
       if (args.dryRun) {
         console.log(`${prefix}  parsed=${cards.length} (dry-run, no DB write)`);
       } else {
-        const r = await upsertScrapedCards(cards);
+        const r = await upsertScrapedCards(cards, { scrapedSetCode: setCode });
         console.log(
-          `${prefix}  parsed=${cards.length} upserted=${r.cardsUpserted} translations=${r.translationsUpserted}`,
+          `${prefix}  parsed=${cards.length} upserted=${r.cardsUpserted} translations=${r.translationsUpserted} memberships=${r.membershipsAdded}`,
         );
       }
       summary.push({ setCode, cards: cards.length });

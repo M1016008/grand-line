@@ -83,9 +83,9 @@ async function main() {
   }
 
   const { upsertScrapedCards } = await import("./upsert");
-  const result = await upsertScrapedCards(cards);
+  const result = await upsertScrapedCards(cards, { scrapedSetCode: args.setCode });
   console.log(
-    `✓ DB upsert: sets=${result.setsTouched} cards=${result.cardsUpserted} translations=${result.translationsUpserted}`,
+    `✓ DB upsert: sets=${result.setsTouched} cards=${result.cardsUpserted} translations=${result.translationsUpserted} memberships=${result.membershipsAdded}`,
   );
 }
 

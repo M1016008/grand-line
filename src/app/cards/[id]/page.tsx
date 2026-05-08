@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -33,7 +34,6 @@ export default async function CardDetailPage({ params }: PageProps) {
     ["カウンター", card.counter],
     ["ライフ", card.life],
     ["レアリティ", card.rarity],
-    ["セット", card.setCode],
   ];
 
   return (
@@ -46,13 +46,15 @@ export default async function CardDetailPage({ params }: PageProps) {
 
         <div className="grid gap-6 md:grid-cols-[280px_1fr]">
           <div className="space-y-3">
-            <div className="border-border/40 bg-card/40 flex aspect-[3/4] items-center justify-center rounded-lg border">
+            <div className="border-border/40 bg-card/40 relative flex aspect-[3/4] items-center justify-center overflow-hidden rounded-lg border">
               {card.imageUrlJp ? (
-                /* eslint-disable-next-line @next/next/no-img-element */
-                <img
+                <Image
                   src={card.imageUrlJp}
                   alt={card.name}
-                  className="h-full w-full rounded-md object-contain"
+                  fill
+                  sizes="(max-width: 768px) 100vw, 280px"
+                  className="object-contain"
+                  priority
                 />
               ) : (
                 <div className="text-muted-foreground p-6 text-center text-xs">
@@ -148,6 +150,40 @@ export default async function CardDetailPage({ params }: PageProps) {
                     </Badge>
                   ))}
                 </div>
+              </div>
+            ) : null}
+
+            {card.memberships.length > 0 ? (
+              <div>
+                <h3 className="text-muted-foreground mb-2 text-xs tracking-widest uppercase">
+                  収録セット ({card.memberships.length})
+                </h3>
+                <ul className="space-y-1.5">
+                  {card.memberships.map((m) => (
+                    <li key={m.code}>
+                      <Link
+                        href={`/cards?setCode=${m.code}`}
+                        className="border-border/40 bg-card/40 hover:border-primary/40 flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-xs transition"
+                      >
+                        <span className="flex items-center gap-2">
+                          <span className="text-muted-foreground font-mono">
+                            {m.code}
+                          </span>
+                          <span>{m.nameJa}</span>
+                        </span>
+                        {m.canonical ? (
+                          <Badge variant="outline" className="text-[10px]">
+                            初出
+                          </Badge>
+                        ) : (
+                          <span className="text-muted-foreground text-[10px]">
+                            再録
+                          </span>
+                        )}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
               </div>
             ) : null}
           </div>

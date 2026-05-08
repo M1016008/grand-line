@@ -108,6 +108,37 @@ export const cards = sqliteTable(
 );
 
 /**
+ * Many-to-many between `cards` and `card_sets`.
+ *
+ * `cards.set_code` records the canonical owning set (derived from the id
+ * prefix — `OP01-001` always belongs to `OP01`). But cards are routinely
+ * reprinted: an OP01-001 might also appear in a PRB02 best-of pack, an
+ * EB04 anniversary set, etc. The id stays the same; the set membership
+ * grows. Without a join table, filtering by `set_code = 'PRB02'` would
+ * only show cards with PRB02-prefixed ids, which misses the bulk of the
+ * pack's actual contents.
+ *
+ * The scraper is responsible for inserting one row per (card, scraped
+ * set) pair when it finds a reprint. The canonical (card, owning set)
+ * row is also inserted so the join is complete on its own.
+ */
+export const cardSetMembership = sqliteTable(
+  "card_set_membership",
+  {
+    cardId: text()
+      .notNull()
+      .references(() => cards.id, { onDelete: "cascade" }),
+    setCode: text()
+      .notNull()
+      .references(() => cardSets.code, { onDelete: "restrict" }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.cardId, t.setCode] }),
+    index("idx_card_set_membership_set").on(t.setCode),
+  ],
+);
+
+/**
  * Allowed `card_translations.source` values:
  *  - `official_jp`  — pulled from バンダイ公式 (日本語)
  *  - `official_en`  — pulled from Bandai America / SG / etc.
