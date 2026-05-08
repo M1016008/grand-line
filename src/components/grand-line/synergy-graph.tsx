@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 import {
@@ -58,12 +59,139 @@ function strokeBucket(strength: number): { width: number; opacity: number } {
   return { width: 1.4, opacity: 0.45 };
 }
 
+interface ViewTransform {
+  /** Pan offset in viewBox units. */
+  tx: number;
+  ty: number;
+  /** Multiplicative zoom (1 = fit, >1 = zoomed in). */
+  scale: number;
+}
+
+const IDENTITY_VIEW: ViewTransform = { tx: 0, ty: 0, scale: 1 };
+const MIN_SCALE = 0.5;
+const MAX_SCALE = 8;
+
 export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps) {
   const [mode, setMode] = useState<LayoutMode>("compass");
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [hoveredEdge, setHoveredEdge] = useState<string | null>(null);
   /** When set, only edges of this relation type render. Null → show all. */
   const [soloRelation, setSoloRelation] = useState<RelationType | null>(null);
+  /** Pan/zoom transform applied to the inner <g>. */
+  const [view, setView] = useState<ViewTransform>(IDENTITY_VIEW);
+  const [isDragging, setIsDragging] = useState(false);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  /** Latest view in a ref so the wheel handler (bound once) reads fresh values. */
+  const viewRef = useRef(view);
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
+  const dragStateRef = useRef<{
+    active: boolean;
+    startCx: number;
+    startCy: number;
+    startTx: number;
+    startTy: number;
+    moved: boolean;
+    pointerId: number;
+  } | null>(null);
+
+  // Reset zoom/pan whenever the layout mode changes — the new layout has
+  // a different coordinate system and stale offsets would land off-canvas.
+  useEffect(() => {
+    setView(IDENTITY_VIEW);
+  }, [mode]);
+
+  // React's onWheel is registered as passive, so preventDefault inside
+  // would log a warning. We attach the listener manually with passive:false
+  // to swallow the page-scroll behavior while zooming.
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      const pt = svg.createSVGPoint();
+      pt.x = e.clientX;
+      pt.y = e.clientY;
+      const ctm = svg.getScreenCTM();
+      if (!ctm) return;
+      const svgPt = pt.matrixTransform(ctm.inverse());
+
+      const cur = viewRef.current;
+      const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+      const newScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, cur.scale * factor));
+      const ratio = newScale / cur.scale;
+      if (ratio === 1) return;
+
+      // Keep the point under the cursor anchored.
+      // Solve for new (tx, ty) so that tx + scale*p stays the same:
+      //   tx_new = tx*ratio + p*(1 - ratio)
+      setView({
+        scale: newScale,
+        tx: cur.tx * ratio + svgPt.x * (1 - ratio),
+        ty: cur.ty * ratio + svgPt.y * (1 - ratio),
+      });
+    };
+    svg.addEventListener("wheel", handler, { passive: false });
+    return () => svg.removeEventListener("wheel", handler);
+  }, []);
+
+  const onPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    // Don't hijack clicks on cards — those should navigate.
+    const target = e.target as Element;
+    if (target.closest("a")) return;
+    dragStateRef.current = {
+      active: true,
+      startCx: e.clientX,
+      startCy: e.clientY,
+      startTx: view.tx,
+      startTy: view.ty,
+      moved: false,
+      pointerId: e.pointerId,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const onPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    const ds = dragStateRef.current;
+    if (!ds?.active) return;
+    const dx = e.clientX - ds.startCx;
+    const dy = e.clientY - ds.startCy;
+    if (!ds.moved && Math.hypot(dx, dy) < 4) return;
+    if (!ds.moved) setIsDragging(true);
+    ds.moved = true;
+    const ctm = svgRef.current?.getScreenCTM();
+    if (!ctm) return;
+    // Convert client-px delta into viewBox-unit delta.
+    setView((v) => ({
+      ...v,
+      tx: ds.startTx + dx / ctm.a,
+      ty: ds.startTy + dy / ctm.d,
+    }));
+  };
+
+  const onPointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
+    const ds = dragStateRef.current;
+    if (!ds) return;
+    if (e.currentTarget.hasPointerCapture(ds.pointerId)) {
+      e.currentTarget.releasePointerCapture(ds.pointerId);
+    }
+    dragStateRef.current = null;
+    setIsDragging(false);
+  };
+
+  const zoomBy = (factor: number) => {
+    setView((v) => {
+      const newScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, v.scale * factor));
+      const ratio = newScale / v.scale;
+      // Zoom around the canvas centre when triggered by a button.
+      const cx = (graph.width / 2) * (1 - ratio);
+      const cy = (graph.height / 2) * (1 - ratio);
+      return { scale: newScale, tx: v.tx * ratio + cx, ty: v.ty * ratio + cy };
+    });
+  };
+  const resetView = () => setView(IDENTITY_VIEW);
+  const isTransformed = view.scale !== 1 || view.tx !== 0 || view.ty !== 0;
 
   const graph: LaidOutGraph = useMemo(() => {
     if (mode === "compass") return buildCompassLayout(leader, pool, edges);
@@ -110,24 +238,67 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
           </p>
         </div>
 
-        <ToggleGroup
-          type="single"
-          value={mode}
-          onValueChange={(v) => v && setMode(v as LayoutMode)}
-          variant="outline"
-          size="sm"
-        >
-          <ToggleGroupItem value="compass">シンプル</ToggleGroupItem>
-          <ToggleGroupItem value="force">詳細</ToggleGroupItem>
-        </ToggleGroup>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-0.5">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 w-8 p-0"
+              onClick={() => zoomBy(1.2)}
+              aria-label="拡大"
+              title="拡大"
+            >
+              ＋
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 w-8 p-0"
+              onClick={() => zoomBy(1 / 1.2)}
+              aria-label="縮小"
+              title="縮小"
+            >
+              −
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 px-2"
+              onClick={resetView}
+              disabled={!isTransformed}
+              aria-label="表示をリセット"
+              title="リセット"
+            >
+              {Math.round(view.scale * 100)}%
+            </Button>
+          </div>
+          <ToggleGroup
+            type="single"
+            value={mode}
+            onValueChange={(v) => v && setMode(v as LayoutMode)}
+            variant="outline"
+            size="sm"
+          >
+            <ToggleGroupItem value="compass">シンプル</ToggleGroupItem>
+            <ToggleGroupItem value="force">詳細</ToggleGroupItem>
+          </ToggleGroup>
+        </div>
       </header>
 
       <div className="border-border/30 bg-background/40 relative overflow-hidden rounded-lg border">
         <svg
+          ref={svgRef}
           viewBox={`0 0 ${graph.width} ${graph.height}`}
-          className="h-[820px] w-full select-none"
+          className={cn(
+            "h-[820px] w-full touch-none select-none",
+            isDragging ? "cursor-grabbing" : "cursor-grab",
+          )}
           role="img"
-          aria-label={`${leader.name} を中心としたシナジーグラフ`}
+          aria-label={`${leader.name} を中心としたシナジーグラフ。ホイールで拡大、ドラッグで移動。`}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
         >
           {/* Reusable circular clip — used to mask each card thumbnail
               into the node's disc. clipPathUnits=objectBoundingBox lets
@@ -137,6 +308,9 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
               <circle cx="0.5" cy="0.5" r="0.5" />
             </clipPath>
           </defs>
+
+          {/* Pan + zoom transform wraps everything below it. */}
+          <g transform={`translate(${view.tx}, ${view.ty}) scale(${view.scale})`}>
 
           {/* Edges first so nodes paint on top. */}
           <g>
@@ -271,6 +445,7 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
                 </g>
               );
             })}
+          </g>
           </g>
         </svg>
 
