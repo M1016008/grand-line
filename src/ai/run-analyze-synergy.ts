@@ -29,6 +29,8 @@ import type { CardListItem } from "@/lib/cards";
 interface CliArgs {
   leader: string;
   limit: number; // 0 = no limit
+  /** Comma-separated candidate ids to target. Overrides --limit when set. */
+  candidates: string[];
   dryRun: boolean;
   yes: boolean;
 }
@@ -36,6 +38,7 @@ interface CliArgs {
 function parseArgs(argv: string[]): CliArgs {
   const args: Partial<CliArgs> = {
     limit: 10,
+    candidates: [],
     dryRun: false,
     yes: false,
   };
@@ -43,11 +46,14 @@ function parseArgs(argv: string[]): CliArgs {
     const a = argv[i];
     if (a === "--leader") args.leader = argv[++i];
     else if (a === "--limit") args.limit = Number(argv[++i]);
-    else if (a === "--dry-run") args.dryRun = true;
+    else if (a === "--candidate" || a === "--candidates") {
+      const ids = argv[++i].split(",").map((s) => s.trim()).filter(Boolean);
+      args.candidates = [...(args.candidates ?? []), ...ids];
+    } else if (a === "--dry-run") args.dryRun = true;
     else if (a === "--yes" || a === "-y") args.yes = true;
     else if (a === "--help" || a === "-h") {
       console.log(
-        "Usage: npm run ai:synergy -- --leader <id> [--limit N] [--dry-run] [--yes]",
+        "Usage: npm run ai:synergy -- --leader <id> [--limit N | --candidate id1,id2] [--dry-run] [--yes]",
       );
       process.exit(0);
     }
@@ -204,14 +210,31 @@ async function main() {
     return a.id.localeCompare(b.id);
   });
 
-  const pool =
-    args.limit > 0 ? fullPool.slice(0, args.limit) : fullPool;
+  const pool = args.candidates.length > 0
+    ? fullPool.filter((c) => args.candidates.includes(c.id))
+    : args.limit > 0
+      ? fullPool.slice(0, args.limit)
+      : fullPool;
+  if (args.candidates.length > 0) {
+    const missing = args.candidates.filter(
+      (id) => !fullPool.some((c) => c.id === id),
+    );
+    if (missing.length > 0) {
+      console.error(
+        `✗ Candidates not in colour-shared pool: ${missing.join(", ")}`,
+      );
+      process.exit(1);
+    }
+  }
   const estimated = (pool.length * SONNET_PER_PAIR_USD).toFixed(2);
+  const filterLabel = args.candidates.length > 0
+    ? `--candidate ${args.candidates.join(",")}`
+    : `--limit ${args.limit}`;
   console.log(
     `▶ Leader ${leader.id} ${leader.name} (${leader.colors.join("/")})`,
   );
   console.log(
-    `  Candidates: ${pool.length} of ${fullPool.length} (--limit ${args.limit})`,
+    `  Candidates: ${pool.length} of ${fullPool.length} (${filterLabel})`,
   );
   console.log(`  Estimated spend: ~$${estimated} USD`);
 
@@ -234,6 +257,7 @@ async function main() {
   // pairs ≈ 1-2 minutes. No need for parallelism at this scale.
   let totalRecords = 0;
   let totalRejected = 0;
+  let totalFailed = 0;
   let lastModelVersion = "";
   for (let i = 0; i < pool.length; i++) {
     const candidate = pool[i];
@@ -241,7 +265,7 @@ async function main() {
       `[${i + 1}/${pool.length}] ${candidate.id} ${candidate.name.slice(0, 18)}…`,
     );
     try {
-      const result = await analyzeSynergy(leader, candidate);
+      const result = await callWithRetry(leader, candidate);
       lastModelVersion = result.modelVersion;
       for (const r of result.records) {
         await db
@@ -277,14 +301,39 @@ async function main() {
         ` ✓ records=${result.records.length} rejected=${result.rejected.length}`,
       );
     } catch (err) {
+      totalFailed += 1;
       console.log(` ✗ ${(err as Error).message}`);
     }
   }
 
   console.log("");
   console.log(
-    `✓ Done. records persisted=${totalRecords} rejected=${totalRejected} model=${lastModelVersion}`,
+    `✓ Done. records persisted=${totalRecords} rejected=${totalRejected} failed=${totalFailed} model=${lastModelVersion}`,
   );
+}
+
+/**
+ * Retry transient API failures (overloaded / 5xx / network) once with a
+ * short backoff. We deliberately don't retry validation rejections — those
+ * mean the model misbehaved and another call won't help.
+ */
+async function callWithRetry(
+  leader: Parameters<typeof analyzeSynergy>[0],
+  candidate: Parameters<typeof analyzeSynergy>[1],
+) {
+  try {
+    return await analyzeSynergy(leader, candidate);
+  } catch (err) {
+    const msg = (err as Error).message ?? "";
+    const status = (err as { status?: number }).status;
+    const transient =
+      status === 429 ||
+      (status !== undefined && status >= 500) ||
+      /overloaded|timeout|ECONNRESET|fetch failed|network/i.test(msg);
+    if (!transient) throw err;
+    await new Promise((r) => setTimeout(r, 4000));
+    return await analyzeSynergy(leader, candidate);
+  }
 }
 
 main().catch((err) => {
