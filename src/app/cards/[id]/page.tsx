@@ -1,4 +1,3 @@
-import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -6,6 +5,7 @@ import { SiteHeader } from "@/components/grand-line/site-header";
 import { ColorChip } from "@/components/grand-line/color-chip";
 import { PairBanBadge, RestrictionBadge } from "@/components/grand-line/restriction-badge";
 import { SourceBadge } from "@/components/grand-line/source-badge";
+import { proxiedCardImage } from "@/lib/img";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -49,13 +49,11 @@ export default async function CardDetailPage({ params }: PageProps) {
           <div className="space-y-3">
             <div className="border-border/40 bg-card/40 relative flex aspect-[3/4] items-center justify-center overflow-hidden rounded-lg border">
               {card.imageUrlJp ? (
-                <Image
-                  src={card.imageUrlJp}
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img
+                  src={proxiedCardImage(card.imageUrlJp)!}
                   alt={card.name}
-                  fill
-                  sizes="(max-width: 768px) 100vw, 280px"
-                  className="object-contain"
-                  priority
+                  className="h-full w-full object-contain"
                 />
               ) : (
                 <div className="text-muted-foreground p-6 text-center text-xs">

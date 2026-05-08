@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { SiteHeader } from "@/components/grand-line/site-header";
 import { RestrictionBadge } from "@/components/grand-line/restriction-badge";
+import { proxiedCardImage } from "@/lib/img";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { getRegulationsView, type RegulationRow } from "@/lib/regulations";
@@ -139,8 +140,19 @@ function RegulationGroup({
               className="focus-visible:ring-ring focus-visible:ring-offset-background block focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
             >
               <Card className="hover:border-primary/40 group transition">
-                <CardContent className="flex items-center justify-between gap-3 p-3">
-                  <div className="min-w-0">
+                <CardContent className="flex items-center gap-3 p-3">
+                  <div className="border-border/30 bg-card/60 relative aspect-[3/4] w-12 shrink-0 overflow-hidden rounded-md border">
+                    {row.imageUrlJp ? (
+                      /* eslint-disable-next-line @next/next/no-img-element */
+                      <img
+                        src={proxiedCardImage(row.imageUrlJp)!}
+                        alt={row.name}
+                        loading="lazy"
+                        className="h-full w-full object-cover"
+                      />
+                    ) : null}
+                  </div>
+                  <div className="min-w-0 flex-1">
                     <div className="text-muted-foreground font-mono text-[11px] tracking-widest uppercase">
                       {row.cardId} · {row.setCode}
                     </div>

@@ -152,8 +152,14 @@ function parseCardNode(
   // Image lives in <img class="lazy" data-src="..."> with src="dummy.gif".
   // We resolve the relative path against the page URL so storing it as-is
   // remains usable from the browser.
+  // Bandai serves card art with a `?<cache-buster>` query string; strip it
+  // because Next.js 16's `images.remotePatterns.search` is now an explicit
+  // allow-list (defaults to "no query string"). Bandai serves the same
+  // bytes with or without the suffix, so dropping it is lossless.
   const dataSrc = node.find(".frontCol img.lazy").attr("data-src") ?? null;
-  const imageUrlJp = dataSrc ? new URL(dataSrc, fixture.url).toString() : null;
+  const resolvedSrc = dataSrc ? new URL(dataSrc, fixture.url) : null;
+  if (resolvedSrc) resolvedSrc.search = "";
+  const imageUrlJp = resolvedSrc ? resolvedSrc.toString() : null;
 
   return {
     id,

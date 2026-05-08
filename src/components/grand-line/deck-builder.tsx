@@ -8,6 +8,7 @@ import { DeckRadar } from "@/components/grand-line/deck-radar";
 import { ProbabilityPanel } from "@/components/grand-line/probability-panel";
 import { RestrictionBadge } from "@/components/grand-line/restriction-badge";
 import { SourceBadge } from "@/components/grand-line/source-badge";
+import { proxiedCardImage } from "@/lib/img";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -138,10 +139,21 @@ export function DeckBuilder({
                 <li
                   key={c.id}
                   className={cn(
-                    "border-border/30 hover:bg-accent/30 flex items-center gap-3 rounded-md border bg-background/40 px-3 py-2",
+                    "border-border/30 hover:bg-accent/30 flex items-center gap-3 rounded-md border bg-background/40 px-2 py-1.5",
                     banned && "opacity-50",
                   )}
                 >
+                  <div className="border-border/30 bg-card/60 relative aspect-[3/4] w-9 shrink-0 overflow-hidden rounded-sm border">
+                    {c.imageUrlJp ? (
+                      /* eslint-disable-next-line @next/next/no-img-element */
+                      <img
+                        src={proxiedCardImage(c.imageUrlJp)!}
+                        alt={c.name}
+                        loading="lazy"
+                        className="h-full w-full object-cover"
+                      />
+                    ) : null}
+                  </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="text-muted-foreground font-mono text-[11px]">
