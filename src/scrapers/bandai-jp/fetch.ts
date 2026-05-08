@@ -36,7 +36,7 @@ import type { RawSetFixture } from "./types";
  * If a new pack ships, re-fetch the cardlist root and inspect the dropdown
  * before adding here — Bandai sometimes assigns non-sequential ids.
  */
-const SERIES_PARAM: Record<string, string> = {
+export const SERIES_PARAM: Record<string, string> = {
   // Starter decks (ST01-ST30)
   ST01: "550001", ST02: "550002", ST03: "550003", ST04: "550004", ST05: "550005",
   ST06: "550006", ST07: "550007", ST08: "550008", ST09: "550009", ST10: "550010",
@@ -132,11 +132,41 @@ export const SET_NAMES_JP: Record<string, string> = {
 
 const BASE_URL = "https://www.onepiece-cardgame.com/cardlist/";
 
+/**
+ * Resolve a set code to its Bandai series id. Checks the static
+ * `SERIES_PARAM` table first, then falls back to the `scrape_targets`
+ * DB table (populated by the discover flow). Returns `undefined` when
+ * neither knows about the code.
+ *
+ * Imported lazily so this module can be consumed from CLI scripts
+ * without paying the libsql connection cost when the static table is
+ * sufficient.
+ */
+async function lookupSeries(setCode: string): Promise<string | undefined> {
+  const fromStatic = SERIES_PARAM[setCode];
+  if (fromStatic) return fromStatic;
+  // DB fallback. Avoid pulling the db client into module init so the
+  // unit tests for `parseDropdown` don't open a libsql connection.
+  try {
+    const { db } = await import("@/db");
+    const { scrapeTargets } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const rows = await db
+      .select({ seriesId: scrapeTargets.seriesId })
+      .from(scrapeTargets)
+      .where(eq(scrapeTargets.setCode, setCode))
+      .limit(1);
+    return rows[0]?.seriesId;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function fetchSetHtml(setCode: string): Promise<RawSetFixture> {
-  const series = SERIES_PARAM[setCode];
+  const series = await lookupSeries(setCode);
   if (!series) {
     throw new Error(
-      `Unknown set code "${setCode}". Add it to SERIES_PARAM in fetch.ts after verifying the live dropdown.`,
+      `Unknown set code "${setCode}". Add it to SERIES_PARAM (or run /api/admin/discover-sets) after verifying the live dropdown.`,
     );
   }
 

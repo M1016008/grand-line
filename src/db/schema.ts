@@ -108,6 +108,34 @@ export const cards = sqliteTable(
 );
 
 /**
+ * Discoverable Bandai dropdown entries. Acts as a runtime extension of the
+ * static `SERIES_PARAM` table in `src/scrapers/bandai-jp/fetch.ts`: the
+ * "discover new sets" flow inserts new rows here when Bandai adds a pack
+ * that isn't yet in our hardcoded list, so the user can click-to-scrape
+ * without editing source.
+ *
+ * `set_code` is the human-facing label (e.g. "OP16"); `series_id` is the
+ * value Bandai's `<select id="series">` uses (e.g. "550116"). Both are
+ * unique. `last_scraped_at` is null until the user (or a cron) actually
+ * runs the per-set scraper.
+ */
+export const scrapeTargets = sqliteTable(
+  "scrape_targets",
+  {
+    setCode: text().primaryKey(),
+    seriesId: text().notNull().unique(),
+    nameJa: text().notNull(),
+    /** 'static' = mirrored from SERIES_PARAM; 'discovered' = found by discover. */
+    source: text({ enum: ["static", "discovered"] }).notNull(),
+    lastScrapedAt: integer({ mode: "timestamp" }),
+    discoveredAt: integer({ mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+  (t) => [index("idx_scrape_targets_source").on(t.source)],
+);
+
+/**
  * Banned / restricted cards as published on
  * https://www.onepiece-cardgame.com/news/restriction.html.
  *

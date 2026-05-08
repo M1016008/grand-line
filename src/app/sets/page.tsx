@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { DiscoverSetsButton } from "@/components/grand-line/discover-sets-button";
 import { SiteHeader } from "@/components/grand-line/site-header";
 import { MockBanner } from "@/components/grand-line/mock-banner";
 import { Card, CardContent } from "@/components/ui/card";
@@ -59,6 +60,8 @@ export default async function SetsPage() {
         </header>
 
         {probe.usingMock ? <MockBanner /> : null}
+
+        <DiscoverSetsButton />
 
         {sortedTypes.map((type) => (
           <section key={type} className="space-y-3">
