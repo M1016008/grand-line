@@ -44,7 +44,7 @@ export default async function SynergyDetailPage({ params }: PageProps) {
   return (
     <>
       <SiteHeader />
-      <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 px-4 py-8">
+      <main className="mx-auto flex w-full max-w-[1600px] flex-1 flex-col gap-6 px-4 py-8">
         <div className="flex items-center justify-between">
           <div>
             <p className="text-primary/80 text-xs tracking-[0.4em] uppercase">
@@ -61,7 +61,7 @@ export default async function SynergyDetailPage({ params }: PageProps) {
 
         {probe.usingMock ? <MockBanner /> : null}
 
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_280px]">
           <SynergyGraph
             leader={data.leader}
             pool={data.pool}

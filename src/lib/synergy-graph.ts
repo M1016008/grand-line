@@ -76,8 +76,8 @@ interface BuildOptions {
   maxEdgesPerNode?: number;
 }
 
-const DEFAULT_WIDTH = 720;
-const DEFAULT_HEIGHT = 560;
+const DEFAULT_WIDTH = 1100;
+const DEFAULT_HEIGHT = 820;
 const DEFAULT_MIN_STRENGTH = 2.5;
 const DEFAULT_MAX_EDGES_PER_NODE = 8;
 const STATIC_TICKS = 280;
