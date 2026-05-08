@@ -11,10 +11,10 @@
  */
 import "server-only";
 
-import { eq, sql } from "drizzle-orm";
+import { and, asc, eq, like, or, sql, type SQL } from "drizzle-orm";
 
 import { db } from "@/db";
-import { cardTranslations, cards } from "@/db/schema";
+import { cardSets, cardTranslations, cards } from "@/db/schema";
 import type { CardTranslationSource } from "@/db/schema";
 import { MOCK_CARDS, type MockCard } from "@/lib/mock-cards";
 
@@ -53,17 +53,28 @@ export interface CardDetail extends CardListItem {
 
 export interface CardListResult {
   cards: CardListItem[];
+  /** Total matching the filter (not paginated). */
   total: number;
+  /** Total cards in the DB regardless of filter — used to render
+   * "{filtered} / {total}" in the UI header. */
+  totalAll: number;
   usingMock: boolean;
+  page: number;
+  pageSize: number;
+  pageCount: number;
 }
 
 export interface CardListFilters {
   language?: string;
   cardType?: string;
+  setCode?: string;
   color?: string;
   feature?: string;
-  text?: string; // free-text query against card_translations FTS
+  text?: string; // matches name + features
   cost?: number;
+  /** 1-based page number. */
+  page?: number;
+  pageSize?: number;
 }
 
 /* ──────────────────────────────────────────────────────────────────────── */
@@ -72,15 +83,49 @@ export interface CardListFilters {
 
 export async function listCards(
   filters: CardListFilters = {},
+  /** @deprecated use `filters.pageSize` — kept for callers that just want a slice. */
   limit = 60,
 ): Promise<CardListResult> {
+  const pageSize = filters.pageSize ?? limit;
+  const page = Math.max(1, filters.page ?? 1);
+  const augmented: CardListFilters = { ...filters, pageSize, page };
   try {
-    const live = await listFromDb(filters, limit);
-    if (live.cards.length > 0) return live;
+    const live = await listFromDb(augmented);
+    if (live.totalAll > 0) return live;
   } catch (err) {
     console.warn("[cards] DB query failed, falling back to mock:", err);
   }
-  return listFromMock(filters, limit);
+  return listFromMock(augmented);
+}
+
+export interface SetSummary {
+  code: string;
+  nameJa: string;
+  setType: string;
+  cardCount: number;
+}
+
+/** Sets currently in the DB, ordered by their code. Used by the filter UI. */
+export async function listSets(): Promise<SetSummary[]> {
+  try {
+    const rows = await db
+      .select({
+        code: cardSets.code,
+        nameJa: cardSets.nameJa,
+        setType: cardSets.setType,
+        cardCount: sql<number>`(SELECT COUNT(*) FROM cards WHERE cards.set_code = card_sets.code)`,
+      })
+      .from(cardSets)
+      .orderBy(asc(cardSets.code));
+    return rows.map((r) => ({
+      code: r.code,
+      nameJa: r.nameJa,
+      setType: r.setType,
+      cardCount: Number(r.cardCount ?? 0),
+    }));
+  } catch {
+    return [];
+  }
 }
 
 export async function getCard(id: string, language = "ja"): Promise<CardDetail | null> {
@@ -97,12 +142,72 @@ export async function getCard(id: string, language = "ja"): Promise<CardDetail |
 /* DB-backed implementations                                                 */
 /* ──────────────────────────────────────────────────────────────────────── */
 
-async function listFromDb(
-  filters: CardListFilters,
-  limit: number,
-): Promise<CardListResult> {
+async function listFromDb(filters: CardListFilters): Promise<CardListResult> {
   const language = filters.language ?? "ja";
+  const pageSize = filters.pageSize ?? 60;
+  const page = Math.max(1, filters.page ?? 1);
+  const offset = (page - 1) * pageSize;
 
+  const conditions: SQL[] = [];
+  if (filters.cardType) {
+    // The column has an enum constraint; cast to the unioned literal so
+    // the user-facing string type satisfies Drizzle's narrow signature.
+    conditions.push(eq(cards.cardType, filters.cardType as "LEADER"));
+  }
+  if (filters.setCode) conditions.push(eq(cards.setCode, filters.setCode));
+  if (typeof filters.cost === "number") conditions.push(eq(cards.cost, filters.cost));
+
+  // colors / features / mechanics are JSON arrays stored as TEXT. Until the
+  // SQLite JSON1 path is wired through Drizzle for typed queries, a quoted
+  // LIKE works ("red" appears as `"red"` inside the JSON literal).
+  if (filters.color) {
+    conditions.push(like(cards.colors as unknown as SQL, `%"${filters.color}"%`));
+  }
+  if (filters.feature) {
+    conditions.push(
+      like(cards.features as unknown as SQL, `%${filters.feature}%`),
+    );
+  }
+  if (filters.text) {
+    conditions.push(
+      or(
+        like(cardTranslations.name, `%${filters.text}%`),
+        like(cards.features as unknown as SQL, `%${filters.text}%`),
+      )!,
+    );
+  }
+
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+  // Count of all cards in the DB regardless of filter — for the header.
+  const totalAllRow = await db
+    .select({ n: sql<number>`COUNT(*)` })
+    .from(cards);
+  const totalAll = Number(totalAllRow[0]?.n ?? 0);
+  if (totalAll === 0) {
+    return {
+      cards: [],
+      total: 0,
+      totalAll: 0,
+      usingMock: false,
+      page,
+      pageSize,
+      pageCount: 0,
+    };
+  }
+
+  // Filtered count.
+  const totalRow = await db
+    .select({ n: sql<number>`COUNT(*)` })
+    .from(cards)
+    .leftJoin(
+      cardTranslations,
+      sql`${cardTranslations.cardId} = ${cards.id} AND ${cardTranslations.language} = ${language}`,
+    )
+    .where(where ?? sql`1=1`);
+  const total = Number(totalRow[0]?.n ?? 0);
+
+  // Page slice.
   const rows = await db
     .select({
       id: cards.id,
@@ -128,10 +233,13 @@ async function listFromDb(
       cardTranslations,
       sql`${cardTranslations.cardId} = ${cards.id} AND ${cardTranslations.language} = ${language}`,
     )
-    .limit(limit);
+    .where(where ?? sql`1=1`)
+    .orderBy(asc(cards.setCode), asc(cards.id))
+    .limit(pageSize)
+    .offset(offset);
 
-  const filtered = rows
-    .map<CardListItem>((r) => ({
+  return {
+    cards: rows.map<CardListItem>((r) => ({
       id: r.id,
       setCode: r.setCode,
       cardType: r.cardType,
@@ -149,10 +257,14 @@ async function listFromDb(
       imageUrlJp: r.imageUrlJp,
       source: (r.source ?? "manual") as CardTranslationSource,
       verified: Boolean(r.verified),
-    }))
-    .filter((c) => matches(c, filters));
-
-  return { cards: filtered, total: filtered.length, usingMock: false };
+    })),
+    total,
+    totalAll,
+    usingMock: false,
+    page,
+    pageSize,
+    pageCount: Math.max(1, Math.ceil(total / pageSize)),
+  };
 }
 
 async function getFromDb(id: string, language: string): Promise<CardDetail | null> {
@@ -221,12 +333,20 @@ async function getFromDb(id: string, language: string): Promise<CardDetail | nul
 /* Mock-backed fallback                                                      */
 /* ──────────────────────────────────────────────────────────────────────── */
 
-function listFromMock(filters: CardListFilters, limit: number): CardListResult {
-  const filtered = MOCK_CARDS.filter((c) => matches(toListItem(c), filters)).slice(0, limit);
+function listFromMock(filters: CardListFilters): CardListResult {
+  const pageSize = filters.pageSize ?? 60;
+  const page = Math.max(1, filters.page ?? 1);
+  const all = MOCK_CARDS.map(toListItem);
+  const filtered = all.filter((c) => matches(c, filters));
+  const slice = filtered.slice((page - 1) * pageSize, page * pageSize);
   return {
-    cards: filtered.map(toListItem),
+    cards: slice,
     total: filtered.length,
+    totalAll: all.length,
     usingMock: true,
+    page,
+    pageSize,
+    pageCount: Math.max(1, Math.ceil(filtered.length / pageSize)),
   };
 }
 
@@ -271,6 +391,7 @@ function toListItem(c: MockCard): CardListItem {
 
 function matches(card: CardListItem, f: CardListFilters): boolean {
   if (f.cardType && card.cardType !== f.cardType) return false;
+  if (f.setCode && card.setCode !== f.setCode) return false;
   if (f.color && !card.colors.includes(f.color)) return false;
   if (f.feature && !card.features.some((x) => x.includes(f.feature!))) return false;
   if (typeof f.cost === "number" && card.cost !== f.cost) return false;

@@ -26,7 +26,9 @@ export default async function DeckBuilderPage({ params }: PageProps) {
 
   // Pull a wide pool — color filtering happens client-side so the user
   // can change leader without a full reload (Phase 2.5 polish).
-  const pool = await listCards({}, 500);
+  // pageSize sized for the full multi-set DB; deck builder dedupes/filters
+  // client-side so over-fetching is cheap.
+  const pool = await listCards({ pageSize: 5000 });
 
   return (
     <>

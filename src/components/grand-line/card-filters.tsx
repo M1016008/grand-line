@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import type { SetSummary } from "@/lib/cards";
 
 const COLORS = [
   { value: "red", label: "赤" },
@@ -26,7 +27,7 @@ const TYPES = [
 
 const COSTS = ["0", "1", "2", "3", "4", "5", "6", "7", "8+"];
 
-export function CardFilters() {
+export function CardFilters({ sets = [] }: { sets?: SetSummary[] }) {
   const router = useRouter();
   const params = useSearchParams();
   const [pending, startTransition] = useTransition();
@@ -37,6 +38,8 @@ export function CardFilters() {
       if (v === undefined || v === "" || v === "all") next.delete(k);
       else next.set(k, v);
     }
+    // Filter changes always reset pagination back to page 1.
+    next.delete("page");
     startTransition(() => router.push(`/cards?${next.toString()}`));
   }
 
@@ -46,7 +49,7 @@ export function CardFilters() {
 
   return (
     <div className="border-border/40 bg-card/40 rounded-lg border p-4">
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto_auto_auto]">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto_auto_auto_auto]">
         <Input
           name="text"
           defaultValue={params.get("text") ?? ""}
@@ -58,10 +61,29 @@ export function CardFilters() {
           }}
         />
         <Select
+          value={params.get("setCode") ?? "all"}
+          onValueChange={(v) => update({ setCode: v })}
+        >
+          <SelectTrigger className="w-44">
+            <SelectValue placeholder="セット" />
+          </SelectTrigger>
+          <SelectContent className="max-h-72">
+            <SelectItem value="all">全セット</SelectItem>
+            {sets.map((s) => (
+              <SelectItem key={s.code} value={s.code}>
+                <span className="font-mono text-[11px]">{s.code}</span>
+                <span className="text-muted-foreground ml-2 text-[11px]">
+                  ({s.cardCount})
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
           value={params.get("cardType") ?? "all"}
           onValueChange={(v) => update({ cardType: v })}
         >
-          <SelectTrigger className="w-36">
+          <SelectTrigger className="w-32">
             <SelectValue placeholder="種類" />
           </SelectTrigger>
           <SelectContent>

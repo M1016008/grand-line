@@ -1,10 +1,11 @@
 import { Suspense } from "react";
 
-import { SiteHeader } from "@/components/grand-line/site-header";
 import { CardFilters } from "@/components/grand-line/card-filters";
 import { CardThumb } from "@/components/grand-line/card-thumb";
 import { MockBanner } from "@/components/grand-line/mock-banner";
-import { listCards } from "@/lib/cards";
+import { Pagination } from "@/components/grand-line/pagination";
+import { SiteHeader } from "@/components/grand-line/site-header";
+import { listCards, listSets } from "@/lib/cards";
 
 export const dynamic = "force-dynamic";
 
@@ -12,23 +13,39 @@ interface PageProps {
   searchParams: Promise<{
     text?: string;
     cardType?: string;
+    setCode?: string;
     color?: string;
     feature?: string;
     cost?: string;
+    page?: string;
   }>;
 }
+
+const PAGE_SIZE = 60;
 
 export default async function CardsPage({ searchParams }: PageProps) {
   const sp = await searchParams;
   const cost = sp.cost && sp.cost !== "8+" ? Number(sp.cost) : undefined;
+  const page = sp.page ? Math.max(1, Number(sp.page)) : 1;
 
-  const result = await listCards({
-    text: sp.text,
-    cardType: sp.cardType,
-    color: sp.color,
-    feature: sp.feature,
-    cost,
-  });
+  const [result, sets] = await Promise.all([
+    listCards({
+      text: sp.text,
+      cardType: sp.cardType,
+      setCode: sp.setCode,
+      color: sp.color,
+      feature: sp.feature,
+      cost,
+      page,
+      pageSize: PAGE_SIZE,
+    }),
+    listSets(),
+  ]);
+
+  const filterParams = new URLSearchParams();
+  for (const [k, v] of Object.entries(sp)) {
+    if (v && k !== "page") filterParams.set(k, String(v));
+  }
 
   return (
     <>
@@ -39,14 +56,15 @@ export default async function CardsPage({ searchParams }: PageProps) {
             カードを探す
           </h1>
           <div className="text-muted-foreground text-sm">
-            {result.total} 件 / {result.usingMock ? "モック" : "DB"}
+            {result.total.toLocaleString()} 件 (全 {result.totalAll.toLocaleString()} 枚 ·{" "}
+            {result.usingMock ? "モック" : `${sets.length} セット`})
           </div>
         </div>
 
         {result.usingMock ? <MockBanner /> : null}
 
         <Suspense fallback={null}>
-          <CardFilters />
+          <CardFilters sets={sets} />
         </Suspense>
 
         {result.cards.length === 0 ? (
@@ -54,13 +72,22 @@ export default async function CardsPage({ searchParams }: PageProps) {
             条件に合うカードが見つかりませんでした。
           </div>
         ) : (
-          <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {result.cards.map((c) => (
-              <li key={c.id}>
-                <CardThumb card={c} />
-              </li>
-            ))}
-          </ul>
+          <>
+            <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              {result.cards.map((c) => (
+                <li key={c.id}>
+                  <CardThumb card={c} />
+                </li>
+              ))}
+            </ul>
+
+            <Pagination
+              page={result.page}
+              pageCount={result.pageCount}
+              basePath="/cards"
+              filterParams={filterParams.toString()}
+            />
+          </>
         )}
       </main>
     </>

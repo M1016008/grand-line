@@ -3,6 +3,9 @@ import Link from "next/link";
 import { SiteHeader } from "@/components/grand-line/site-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { listCards, listSets } from "@/lib/cards";
+
+export const dynamic = "force-dynamic";
 
 const PILLARS = [
   {
@@ -22,7 +25,15 @@ const PILLARS = [
   },
 ];
 
-export default function HomePage() {
+export default async function HomePage() {
+  // Cheap probes — both queries are O(small) thanks to listSets returning
+  // 51 rows max and listCards({pageSize: 1}) hitting only the count query.
+  const [sets, probe] = await Promise.all([
+    listSets(),
+    listCards({ pageSize: 1 }),
+  ]);
+  const dbReady = !probe.usingMock && probe.totalAll > 0;
+
   return (
     <>
       <SiteHeader />
@@ -70,21 +81,34 @@ export default function HomePage() {
         </section>
 
         <section className="border-border/40 bg-card/30 rounded-xl border p-6 text-sm">
-          <h2 className="font-display text-primary mb-2 text-lg tracking-wide">
-            開発ステータス
+          <h2 className="font-display text-primary mb-3 text-lg tracking-wide">
+            現在の状態
           </h2>
-          <ul className="text-muted-foreground space-y-1">
+          {dbReady ? (
+            <div className="text-muted-foreground grid gap-2 sm:grid-cols-3">
+              <Stat
+                label="取り込み済みカード"
+                value={probe.totalAll.toLocaleString()}
+              />
+              <Stat label="セット数" value={String(sets.length)} />
+              <Stat label="リーダー" value="抽出済み" />
+            </div>
+          ) : (
+            <p className="text-muted-foreground">
+              モックデータで動作中。Turso またはローカル SQLite を設定し、{" "}
+              <code className="font-mono text-xs">
+                npm run scrape:bandai-jp:all
+              </code>{" "}
+              でカードを取り込めます。
+            </p>
+          )}
+          <ul className="text-muted-foreground mt-4 space-y-1">
             <li>
-              <span className="text-foreground font-mono">Phase 1</span> ─
-              カードDB基盤 (実装中)
+              <span className="text-foreground font-mono">Phase 1-3.7</span> ─
+              カードDB / デッキビルダー / 評価指標 / シナジー / 確率エンジン (完了)
             </li>
             <li>
-              <span className="text-foreground font-mono">Phase 2</span> ─
-              デッキビルダー (リーダー選択 + 50枚デッキ + ルール検証 — 着手)
-            </li>
-            <li>
-              <span className="font-mono">Phase 3 以降</span> ─
-              評価指標・シナジー・確率・AI 提案・シナリオ・対戦相手分析・大会情報
+              <span className="font-mono">Phase 4 以降</span> ─ AI デッキ提案・シナリオ・対戦相手分析・大会情報
             </li>
           </ul>
         </section>
@@ -95,5 +119,16 @@ export default function HomePage() {
         </p>
       </footer>
     </>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="border-border/30 bg-card/40 rounded-lg border p-3">
+      <div className="text-muted-foreground text-[10px] tracking-widest uppercase">
+        {label}
+      </div>
+      <div className="text-foreground font-mono text-2xl">{value}</div>
+    </div>
   );
 }

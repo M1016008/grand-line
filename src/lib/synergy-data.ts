@@ -26,8 +26,8 @@ export interface SynergyGraphData {
 }
 
 export async function getSynergyGraph(leaderId: string): Promise<SynergyGraphData | null> {
-  // Fetch leader (must exist in DB or mock fallback).
-  const all = await listCards({}, 500);
+  // First fetch the leader directly so we know its colours.
+  const all = await listCards({ pageSize: 5000 });
   const leader = all.cards.find((c) => c.id === leaderId);
   if (!leader || leader.cardType !== "LEADER") return null;
 

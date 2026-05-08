@@ -13,10 +13,13 @@ import { cardSets, cardTranslations, cards } from "@/db/schema";
 import { extractMechanics } from "@/lib/mechanics";
 import { normalizeEffectText } from "@/lib/normalize";
 
+import { SET_NAMES_JP } from "./fetch";
 import type { ScrapedCard } from "./types";
 
-/** Best-effort set name; refined later when we scrape the set list page. */
-function defaultSetName(code: string): { ja: string; en: string | null } {
+/** Set name lookup. Falls back to a synthetic label when unknown. */
+function setName(code: string): { ja: string; en: string | null } {
+  const known = SET_NAMES_JP[code];
+  if (known) return { ja: known, en: null };
   const prefix = code.slice(0, 2);
   const num = code.slice(2);
   if (prefix === "OP") return { ja: `第${num}弾 (${code})`, en: `Booster ${num}` };
@@ -38,7 +41,7 @@ export async function upsertScrapedCards(scraped: ScrapedCard[]): Promise<{
   // scraped; sets without cards stay untouched.
   const setCodes = Array.from(new Set(scraped.map((c) => c.setCode)));
   for (const code of setCodes) {
-    const names = defaultSetName(code);
+    const names = setName(code);
     await db
       .insert(cardSets)
       .values({
