@@ -5,7 +5,7 @@ import { SiteHeader } from "@/components/grand-line/site-header";
 import { DeckBuilder } from "@/components/grand-line/deck-builder";
 import { MockBanner } from "@/components/grand-line/mock-banner";
 import { Button } from "@/components/ui/button";
-import { getCard, listCards } from "@/lib/cards";
+import { getActiveRestrictions, getCard, listCards } from "@/lib/cards";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +28,14 @@ export default async function DeckBuilderPage({ params }: PageProps) {
   // can change leader without a full reload (Phase 2.5 polish).
   // pageSize sized for the full multi-set DB; deck builder dedupes/filters
   // client-side so over-fetching is cheap.
-  const pool = await listCards({ pageSize: 5000 });
+  const [pool, restrictions] = await Promise.all([
+    listCards({ pageSize: 5000 }),
+    getActiveRestrictions(),
+  ]);
+
+  // Maps don't survive the server → client component prop boundary in Next,
+  // so flatten to plain arrays/objects.
+  const restrictionRecord = Object.fromEntries(restrictions.perCardMax);
 
   return (
     <>
@@ -50,7 +57,13 @@ export default async function DeckBuilderPage({ params }: PageProps) {
 
         {pool.usingMock ? <MockBanner /> : null}
 
-        <DeckBuilder leader={leader} pool={pool.cards} usingMock={pool.usingMock} />
+        <DeckBuilder
+          leader={leader}
+          pool={pool.cards}
+          usingMock={pool.usingMock}
+          perCardMax={restrictionRecord}
+          pairBans={restrictions.pairBans}
+        />
       </main>
     </>
   );

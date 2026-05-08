@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 
 import { SiteHeader } from "@/components/grand-line/site-header";
 import { ColorChip } from "@/components/grand-line/color-chip";
+import { PairBanBadge, RestrictionBadge } from "@/components/grand-line/restriction-badge";
 import { SourceBadge } from "@/components/grand-line/source-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -76,6 +77,15 @@ export default async function CardDetailPage({ params }: PageProps) {
                 {card.name}
               </h1>
               <div className="flex flex-wrap gap-1.5 pt-1">
+                {card.restriction ? (
+                  <RestrictionBadge
+                    maxCopies={card.restriction.maxCopies}
+                    effectiveFrom={card.restriction.effectiveFrom}
+                  />
+                ) : null}
+                {card.pairBans.map((pb) => (
+                  <PairBanBadge key={pb.partnerId} partnerId={pb.partnerId} />
+                ))}
                 {card.colors.map((c) => (
                   <ColorChip key={c} color={c} />
                 ))}

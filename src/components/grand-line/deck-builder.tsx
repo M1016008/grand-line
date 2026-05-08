@@ -6,6 +6,7 @@ import { AiDeckProposer } from "@/components/grand-line/ai-deck-proposer";
 import { ColorChip } from "@/components/grand-line/color-chip";
 import { DeckRadar } from "@/components/grand-line/deck-radar";
 import { ProbabilityPanel } from "@/components/grand-line/probability-panel";
+import { RestrictionBadge } from "@/components/grand-line/restriction-badge";
 import { SourceBadge } from "@/components/grand-line/source-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -29,11 +30,21 @@ interface DeckBuilderProps {
   pool: CardListItem[];
   /** Whether the underlying card data is mock vs DB-backed. */
   usingMock: boolean;
+  /** Bandai-issued max-copies overrides (0 = banned, 1-3 = restricted). */
+  perCardMax?: Record<string, number>;
+  /** Banned pairs. */
+  pairBans?: Array<{ cardIdA: string; cardIdB: string }>;
 }
 
 const TARGET = 50;
 
-export function DeckBuilder({ leader, pool, usingMock }: DeckBuilderProps) {
+export function DeckBuilder({
+  leader,
+  pool,
+  usingMock,
+  perCardMax = {},
+  pairBans = [],
+}: DeckBuilderProps) {
   const setLeader = useDeckDraft((s) => s.setLeader);
   const entries = useDeckDraft((s) => s.entries);
   const add = useDeckDraft((s) => s.add);
@@ -85,7 +96,14 @@ export function DeckBuilder({ leader, pool, usingMock }: DeckBuilderProps) {
     mechanics: e.card.mechanics,
     count: e.count,
   }));
-  const report = validateDeck(draftLeader, ruleCards);
+  const perCardMaxMap = useMemo(
+    () => new Map(Object.entries(perCardMax)),
+    [perCardMax],
+  );
+  const report = validateDeck(draftLeader, ruleCards, {
+    perCardMax: perCardMaxMap,
+    pairBans,
+  });
   const curve = costCurve(ruleCards);
   const total = report.totalCount;
   const evaluation = useMemo(() => evaluateDeck(evalCards), [evalCards]);
@@ -114,10 +132,15 @@ export function DeckBuilder({ leader, pool, usingMock }: DeckBuilderProps) {
           <ul className="grid gap-1.5">
             {filtered.map((c) => {
               const count = entries[c.id]?.count ?? 0;
+              const max = perCardMaxMap.get(c.id);
+              const banned = max === 0;
               return (
                 <li
                   key={c.id}
-                  className="border-border/30 hover:bg-accent/30 flex items-center gap-3 rounded-md border bg-background/40 px-3 py-2"
+                  className={cn(
+                    "border-border/30 hover:bg-accent/30 flex items-center gap-3 rounded-md border bg-background/40 px-3 py-2",
+                    banned && "opacity-50",
+                  )}
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
@@ -127,6 +150,9 @@ export function DeckBuilder({ leader, pool, usingMock }: DeckBuilderProps) {
                       {c.colors.map((col) => (
                         <ColorChip key={col} color={col} />
                       ))}
+                      {typeof max === "number" ? (
+                        <RestrictionBadge maxCopies={max} size="sm" />
+                      ) : null}
                     </div>
                     <div className="flex items-center gap-2 text-sm">
                       <span className="truncate font-medium">{c.name}</span>

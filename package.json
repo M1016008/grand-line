@@ -16,6 +16,7 @@
     "db:seed:fts": "tsx src/db/seed-fts.ts",
     "scrape:bandai-jp": "tsx src/scrapers/bandai-jp/run.ts",
     "scrape:bandai-jp:all": "tsx src/scrapers/bandai-jp/run-all.ts",
+    "scrape:regulations": "tsx src/scrapers/bandai-jp/run-regulations.ts",
     "test": "tsx --test 'src/**/*.test.ts'"
   },
   "dependencies": {

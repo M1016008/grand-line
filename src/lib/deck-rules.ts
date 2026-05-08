@@ -45,9 +45,23 @@ export interface DeckRuleReport {
 const TARGET_COUNT = 50;
 const MAX_PER_CARD = 4;
 
+/**
+ * Bandai's banned/restricted regulation. The map encodes per-card max
+ * copies (0 = banned, 1-3 = restricted). Cards absent from the map fall
+ * back to MAX_PER_CARD.
+ *
+ * Pair bans encode the "A and B cannot be in the same deck" rule. The
+ * caller should normalize each pair so cardIdA < cardIdB.
+ */
+export interface DeckRegulations {
+  perCardMax?: Map<string, number>;
+  pairBans?: Array<{ cardIdA: string; cardIdB: string }>;
+}
+
 export function validateDeck(
   leader: DeckLeader | null,
   cards: DeckRuleCard[],
+  regulations: DeckRegulations = {},
 ): DeckRuleReport {
   const violations: RuleViolation[] = [];
   const totalCount = cards.reduce((acc, c) => acc + c.count, 0);
@@ -80,7 +94,8 @@ export function validateDeck(
     });
   }
 
-  // Per-card 4 limit.
+  // Per-card 4 limit (Bandai-issued bans/restrictions take precedence).
+  const perCardMax = regulations.perCardMax ?? new Map<string, number>();
   const overLimit = cards.filter((c) => c.count > MAX_PER_CARD);
   if (overLimit.length > 0) {
     violations.push({
@@ -88,6 +103,27 @@ export function validateDeck(
       severity: "error",
       message: `1 種類につき最大 ${MAX_PER_CARD} 枚です。`,
       cardIds: overLimit.map((c) => c.id),
+    });
+  }
+  const banned = cards.filter((c) => perCardMax.get(c.id) === 0);
+  if (banned.length > 0) {
+    violations.push({
+      code: "banned_card",
+      severity: "error",
+      message: "禁止カードが含まれています。",
+      cardIds: banned.map((c) => c.id),
+    });
+  }
+  const overRestricted = cards.filter((c) => {
+    const max = perCardMax.get(c.id);
+    return typeof max === "number" && max > 0 && c.count > max;
+  });
+  if (overRestricted.length > 0) {
+    violations.push({
+      code: "over_restricted",
+      severity: "error",
+      message: "制限カードの枚数を超えています。",
+      cardIds: overRestricted.map((c) => c.id),
     });
   }
   const negative = cards.filter((c) => c.count < 1);
@@ -113,6 +149,23 @@ export function validateDeck(
         message: `リーダーの色 (${leader.colors.join(" / ")}) と一致しないカードがあります。`,
         cardIds: offColor.map((c) => c.id),
       });
+    }
+  }
+
+  // Pair bans — A and B cannot coexist.
+  if (regulations.pairBans && regulations.pairBans.length > 0) {
+    const inDeck = new Set(cards.filter((c) => c.count > 0).map((c) => c.id));
+    // Include the leader id too — some banned pairs apply to leader+character combos.
+    if (leader) inDeck.add(leader.id);
+    for (const pair of regulations.pairBans) {
+      if (inDeck.has(pair.cardIdA) && inDeck.has(pair.cardIdB)) {
+        violations.push({
+          code: "banned_pair",
+          severity: "error",
+          message: `禁止ペア: ${pair.cardIdA} と ${pair.cardIdB} は同じデッキで使用できません。`,
+          cardIds: [pair.cardIdA, pair.cardIdB],
+        });
+      }
     }
   }
 

@@ -7,6 +7,7 @@ const NAV = [
   { href: "/sets" as const, label: "セット" },
   { href: "/decks" as const, label: "デッキ" },
   { href: "/synergy" as const, label: "シナジー" },
+  { href: "/regulations" as const, label: "禁止/制限" },
   { href: "/probability" as const, label: "確率", soon: true },
   { href: "/tournaments" as const, label: "大会", soon: true },
 ];

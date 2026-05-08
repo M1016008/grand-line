@@ -108,6 +108,72 @@ export const cards = sqliteTable(
 );
 
 /**
+ * Banned / restricted cards as published on
+ * https://www.onepiece-cardgame.com/news/restriction.html.
+ *
+ * `max_copies` semantics:
+ *   0 = banned (cannot include in deck at all)
+ *   1 = restricted to 1 copy
+ *   2-3 = restricted to N copies
+ * Anything not present in this table follows the default rule (≤ 4 copies).
+ *
+ * One row per card per regulation revision. The "current" row for a card
+ * is the one with `effective_until IS NULL`. The deck-rules validator
+ * only consults current rows.
+ */
+export const cardRestrictions = sqliteTable(
+  "card_restrictions",
+  {
+    cardId: text()
+      .notNull()
+      .references(() => cards.id, { onDelete: "cascade" }),
+    /** ISO date (YYYY-MM-DD) when this restriction took effect. */
+    effectiveFrom: text().notNull(),
+    /** ISO date when superseded; null if currently active. */
+    effectiveUntil: text(),
+    maxCopies: integer().notNull(),
+    reason: text(),
+    sourceUrl: text().notNull(),
+    fetchedAt: integer({ mode: "timestamp" }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.cardId, t.effectiveFrom] }),
+    index("idx_restrictions_active").on(t.cardId, t.effectiveUntil),
+    check(
+      "ck_restrictions_max_copies_range",
+      sql`${t.maxCopies} >= 0 AND ${t.maxCopies} <= 4`,
+    ),
+  ],
+);
+
+/**
+ * Banned card pairs ("禁止ペア"): A and B cannot appear together in the
+ * same deck, even though each one alone is legal. Stored normalized so
+ * card_id_a always precedes card_id_b alphabetically — this avoids
+ * double-row representations of the same pair.
+ */
+export const cardRestrictionPairs = sqliteTable(
+  "card_restriction_pairs",
+  {
+    cardIdA: text()
+      .notNull()
+      .references(() => cards.id, { onDelete: "cascade" }),
+    cardIdB: text()
+      .notNull()
+      .references(() => cards.id, { onDelete: "cascade" }),
+    effectiveFrom: text().notNull(),
+    effectiveUntil: text(),
+    sourceUrl: text().notNull(),
+    fetchedAt: integer({ mode: "timestamp" }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.cardIdA, t.cardIdB, t.effectiveFrom] }),
+    index("idx_restriction_pairs_b").on(t.cardIdB),
+    check("ck_restriction_pair_ordered", sql`${t.cardIdA} < ${t.cardIdB}`),
+  ],
+);
+
+/**
  * Many-to-many between `cards` and `card_sets`.
  *
  * `cards.set_code` records the canonical owning set (derived from the id

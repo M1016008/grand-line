@@ -5,7 +5,7 @@ import { CardThumb } from "@/components/grand-line/card-thumb";
 import { MockBanner } from "@/components/grand-line/mock-banner";
 import { Pagination } from "@/components/grand-line/pagination";
 import { SiteHeader } from "@/components/grand-line/site-header";
-import { listCards, listSets } from "@/lib/cards";
+import { getActiveRestrictions, listCards, listSets } from "@/lib/cards";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +28,7 @@ export default async function CardsPage({ searchParams }: PageProps) {
   const cost = sp.cost && sp.cost !== "8+" ? Number(sp.cost) : undefined;
   const page = sp.page ? Math.max(1, Number(sp.page)) : 1;
 
-  const [result, sets] = await Promise.all([
+  const [result, sets, restrictions] = await Promise.all([
     listCards({
       text: sp.text,
       cardType: sp.cardType,
@@ -40,6 +40,7 @@ export default async function CardsPage({ searchParams }: PageProps) {
       pageSize: PAGE_SIZE,
     }),
     listSets(),
+    getActiveRestrictions(),
   ]);
 
   const filterParams = new URLSearchParams();
@@ -76,7 +77,10 @@ export default async function CardsPage({ searchParams }: PageProps) {
             <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {result.cards.map((c) => (
                 <li key={c.id}>
-                  <CardThumb card={c} />
+                  <CardThumb
+                    card={c}
+                    restrictionMaxCopies={restrictions.perCardMax.get(c.id) ?? null}
+                  />
                 </li>
               ))}
             </ul>

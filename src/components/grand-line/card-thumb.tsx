@@ -2,11 +2,18 @@ import Link from "next/link";
 
 import { Card, CardContent } from "@/components/ui/card";
 import { ColorChip } from "@/components/grand-line/color-chip";
+import { RestrictionBadge } from "@/components/grand-line/restriction-badge";
 import { SourceBadge } from "@/components/grand-line/source-badge";
 import { Badge } from "@/components/ui/badge";
 import type { CardListItem } from "@/lib/cards";
 
-export function CardThumb({ card }: { card: CardListItem }) {
+interface CardThumbProps {
+  card: CardListItem;
+  /** Bandai-issued max-copies override (0 = banned, 1-3 = restricted). */
+  restrictionMaxCopies?: number | null;
+}
+
+export function CardThumb({ card, restrictionMaxCopies }: CardThumbProps) {
   return (
     <Link
       href={`/cards/${card.id}`}
@@ -29,6 +36,10 @@ export function CardThumb({ card }: { card: CardListItem }) {
               ))}
             </div>
           </div>
+
+          {restrictionMaxCopies !== null && restrictionMaxCopies !== undefined ? (
+            <RestrictionBadge maxCopies={restrictionMaxCopies} size="sm" />
+          ) : null}
 
           <div className="text-muted-foreground flex flex-wrap items-center gap-1.5 text-[11px]">
             <Badge variant="outline" className="font-mono">

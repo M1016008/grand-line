@@ -15,6 +15,8 @@ import { and, asc, eq, like, or, sql, type SQL } from "drizzle-orm";
 
 import { db } from "@/db";
 import {
+  cardRestrictionPairs,
+  cardRestrictions,
   cardSetMembership,
   cardSets,
   cardTranslations,
@@ -64,6 +66,10 @@ export interface CardDetail extends CardListItem {
   fetchedAt: Date | null;
   /** All sets this card has appeared in (canonical first, then reprints). */
   memberships: CardSetMembership[];
+  /** Active single-card restriction (banned/restricted), if any. */
+  restriction: { maxCopies: number; effectiveFrom: string } | null;
+  /** Pair bans the card participates in. */
+  pairBans: Array<{ partnerId: string; partnerName?: string }>;
 }
 
 export interface CardListResult {
@@ -118,6 +124,44 @@ export interface SetSummary {
   nameJa: string;
   setType: string;
   cardCount: number;
+}
+
+export interface ActiveRestrictions {
+  /** Map of card_id → max_copies (0 = banned, 1-3 = restricted). */
+  perCardMax: Map<string, number>;
+  /** Banned pairs, normalized so cardIdA < cardIdB. */
+  pairBans: Array<{ cardIdA: string; cardIdB: string }>;
+}
+
+/**
+ * All currently-active card restrictions. Returns empty maps when the
+ * regulation table is missing / empty (mock mode).
+ */
+export async function getActiveRestrictions(): Promise<ActiveRestrictions> {
+  try {
+    const [singles, pairs] = await Promise.all([
+      db
+        .select({
+          cardId: cardRestrictions.cardId,
+          maxCopies: cardRestrictions.maxCopies,
+        })
+        .from(cardRestrictions)
+        .where(sql`${cardRestrictions.effectiveUntil} IS NULL`),
+      db
+        .select({
+          cardIdA: cardRestrictionPairs.cardIdA,
+          cardIdB: cardRestrictionPairs.cardIdB,
+        })
+        .from(cardRestrictionPairs)
+        .where(sql`${cardRestrictionPairs.effectiveUntil} IS NULL`),
+    ]);
+    return {
+      perCardMax: new Map(singles.map((r) => [r.cardId, r.maxCopies])),
+      pairBans: pairs,
+    };
+  } catch {
+    return { perCardMax: new Map(), pairBans: [] };
+  }
 }
 
 /** Sets currently in the DB, ordered by their code. Used by the filter UI. */
@@ -326,17 +370,42 @@ async function getFromDb(id: string, language: string): Promise<CardDetail | nul
   if (row.length === 0) return null;
   const r = row[0];
 
-  // Fetch every set this card has appeared in (canonical + reprints).
-  const memberRows = await db
-    .select({
-      code: cardSets.code,
-      nameJa: cardSets.nameJa,
-      setType: cardSets.setType,
-    })
-    .from(cardSetMembership)
-    .innerJoin(cardSets, eq(cardSetMembership.setCode, cardSets.code))
-    .where(eq(cardSetMembership.cardId, id))
-    .orderBy(asc(cardSets.code));
+  // Fetch every set this card has appeared in (canonical + reprints) plus
+  // any active restriction / pair-ban rows. Run in parallel — none of the
+  // three depend on each other.
+  const [memberRows, restrictionRows, pairRows] = await Promise.all([
+    db
+      .select({
+        code: cardSets.code,
+        nameJa: cardSets.nameJa,
+        setType: cardSets.setType,
+      })
+      .from(cardSetMembership)
+      .innerJoin(cardSets, eq(cardSetMembership.setCode, cardSets.code))
+      .where(eq(cardSetMembership.cardId, id))
+      .orderBy(asc(cardSets.code)),
+    db
+      .select({
+        maxCopies: cardRestrictions.maxCopies,
+        effectiveFrom: cardRestrictions.effectiveFrom,
+      })
+      .from(cardRestrictions)
+      .where(
+        sql`${cardRestrictions.cardId} = ${id} AND ${cardRestrictions.effectiveUntil} IS NULL`,
+      )
+      .limit(1)
+      .catch(() => []),
+    db
+      .select({
+        cardIdA: cardRestrictionPairs.cardIdA,
+        cardIdB: cardRestrictionPairs.cardIdB,
+      })
+      .from(cardRestrictionPairs)
+      .where(
+        sql`(${cardRestrictionPairs.cardIdA} = ${id} OR ${cardRestrictionPairs.cardIdB} = ${id}) AND ${cardRestrictionPairs.effectiveUntil} IS NULL`,
+      )
+      .catch(() => []),
+  ]);
 
   const canonical = r.setCode;
   const memberships: CardSetMembership[] = memberRows
@@ -352,6 +421,17 @@ async function getFromDb(id: string, language: string): Promise<CardDetail | nul
       canonical: true,
     });
   }
+
+  const restriction = restrictionRows[0]
+    ? {
+        maxCopies: restrictionRows[0].maxCopies,
+        effectiveFrom: restrictionRows[0].effectiveFrom,
+      }
+    : null;
+
+  const pairBans = pairRows.map((p) => ({
+    partnerId: p.cardIdA === id ? p.cardIdB : p.cardIdA,
+  }));
 
   return {
     id: r.id,
@@ -370,6 +450,8 @@ async function getFromDb(id: string, language: string): Promise<CardDetail | nul
     imageUrlJp: r.imageUrlJp,
     mechanics: (r.mechanics ?? []) as string[],
     memberships,
+    restriction,
+    pairBans,
     effectText: r.effectText,
     triggerText: r.triggerText,
     flavorText: r.flavorText,
@@ -414,6 +496,8 @@ function getFromMock(id: string): CardDetail | null {
     memberships: [
       { code: c.setCode, nameJa: c.setCode, setType: "booster", canonical: true },
     ],
+    restriction: null,
+    pairBans: [],
   };
 }
 
