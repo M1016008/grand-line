@@ -10,6 +10,12 @@
  */
 import { config } from "dotenv";
 
-// Most-specific first; later loads do not override earlier ones.
-config({ path: ".env.local" });
+// Most-specific first; .env.local wins over .env.
+//
+// `override: true` is required because tsx 4.21+ auto-loads .env.local
+// via dotenvx with a slightly different parser that occasionally skips
+// values (Anthropic API keys with multiple `-` segments observed). When
+// the parsers disagree we want dotenv (the standard) to be the source
+// of truth.
+config({ path: ".env.local", override: true });
 config({ path: ".env" });

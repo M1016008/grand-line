@@ -1,17 +1,23 @@
 /**
  * Server-side synergy graph fetcher.
  *
- * Today this runs the rule-based detector on demand: cheap (pure TS) and
- * good enough to ship the visualisation without a Claude API key.
+ * Two layers feed the graph:
+ *   1. The rule-based detector — cheap, runs on every request, gives
+ *      decent coverage even without an API key.
+ *   2. AI-tagged rows persisted in `card_synergies` by the
+ *      `ai:synergy` CLI (Phase 3.5b). Merged in on top of the rules so
+ *      the graph picks up any nuanced relationships the regex layer
+ *      can't see.
  *
- * Once `card_synergies` rows are populated by the AI pipeline, this
- * module will switch to a "DB first, rules as fallback / merge" strategy:
- * read AI-tagged edges from the table and union them with fresh rule
- * edges (rule wins on duplicate key, since AI tends to be wordier).
+ * Merge policy: an AI row for a (from, to, relation_type) triple
+ * REPLACES the rule-layer's row. The AI strength is on a 0–10 scale
+ * (rules cap at 7) so the AI naturally wins when both layers fire.
+ * The UI badge reads "rules+ai" whenever at least one AI row exists
+ * for the leader's pool.
  */
 import "server-only";
 
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 
 import { db, schema } from "@/db";
 import { listCards, type CardListItem } from "@/lib/cards";
@@ -39,27 +45,65 @@ export async function getSynergyGraph(leaderId: string): Promise<SynergyGraphDat
     (c) => c.colors.some((col) => leaderColors.has(col)),
   );
 
-  const edges = detectRuleSynergies(leader, pool);
+  const ruleEdges = detectRuleSynergies(leader, pool);
 
-  // Future hook: union with AI-tagged rows. We try to read but tolerate
-  // failure (table may be empty or DB may be missing in dev).
-  let aiEdgeCount = 0;
+  // Pull AI-tagged rows that touch the leader (either side of the edge).
+  // We deliberately don't pull every AI row — most are for other leaders
+  // and would just bloat the merge.
+  let aiEdges: RuleSynergy[] = [];
   try {
     const rows = await db
-      .select()
+      .select({
+        fromCardId: schema.cardSynergies.fromCardId,
+        toCardId: schema.cardSynergies.toCardId,
+        relationType: schema.cardSynergies.relationType,
+        strength: schema.cardSynergies.strength,
+        reasoningJa: schema.cardSynergies.reasoningJa,
+        reasoningEn: schema.cardSynergies.reasoningEn,
+      })
       .from(schema.cardSynergies)
-      .where(eq(schema.cardSynergies.detectedBy, "ai"));
-    aiEdgeCount = rows.length;
-    // TODO(phase 3.5b): merge `rows` into `edges` once the AI pipeline writes
-    // them. Today the table is empty so this is just a probe.
+      .where(
+        and(
+          eq(schema.cardSynergies.detectedBy, "ai"),
+          or(
+            eq(schema.cardSynergies.fromCardId, leader.id),
+            eq(schema.cardSynergies.toCardId, leader.id),
+          )!,
+        ),
+      );
+    aiEdges = rows.map((r) => ({
+      fromCardId: r.fromCardId,
+      toCardId: r.toCardId,
+      relationType: r.relationType,
+      strength: r.strength,
+      reasoningJa: r.reasoningJa ?? "",
+      reasoningEn: r.reasoningEn ?? "",
+    }));
   } catch {
-    /* table missing or db unreachable in mock mode — ignore. */
+    /* table missing or db unreachable — ignore, stay rules-only. */
   }
+
+  // Merge: AI rows override rule rows on the same (from, to, type) key.
+  const key = (e: RuleSynergy) =>
+    `${e.fromCardId}__${e.toCardId}__${e.relationType}`;
+  const merged = new Map<string, RuleSynergy>();
+  for (const e of ruleEdges) merged.set(key(e), e);
+  for (const e of aiEdges) merged.set(key(e), e);
+
+  const edges = [...merged.values()].sort(
+    (a, b) =>
+      b.strength - a.strength ||
+      a.fromCardId.localeCompare(b.fromCardId) ||
+      a.toCardId.localeCompare(b.toCardId),
+  );
+
+  // Suppress unused-import warning.
+  void isNull;
 
   return {
     leader,
     pool,
     edges,
-    source: aiEdgeCount > 0 ? "rules+ai" : "rules",
+    source: aiEdges.length > 0 ? "rules+ai" : "rules",
   };
 }
