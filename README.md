@@ -59,16 +59,68 @@ npm run dev
 
 http://localhost:3000
 
-### Turso の作成 (初回のみ)
+### ローカル SQLite から Turso へ移行
 
-```bash
-turso auth login
-turso db create onepiece-tcg --location nrt
-turso db tokens create onepiece-tcg
-turso db show onepiece-tcg --url
-```
+開発中はローカル SQLite (`./data/grand-line.db`) で動かし、本番は Turso
+(エッジレプリケーション) に切り替えます。コードは両方サポート — `.env.local`
+の `TURSO_DATABASE_URL` が空ならローカル、設定されていれば Turso です。
 
-URL とトークンを `.env.local` に書く。
+#### 手順
+
+1. **Turso CLI と DB**
+
+   ```bash
+   brew install tursodatabase/tap/turso
+   turso auth signup     # 初回のみ
+   turso auth login
+
+   turso db create onepiece-tcg --location nrt   # nrt = 東京リージョン
+   turso db tokens create onepiece-tcg            # 認証トークン (一度きり表示)
+   turso db show onepiece-tcg --url               # libsql://... の URL
+   ```
+
+2. **`.env.local` を更新**
+
+   ```bash
+   TURSO_DATABASE_URL="libsql://onepiece-tcg-<your-org>.turso.io"
+   TURSO_AUTH_TOKEN="<上で発行したトークン>"
+   ```
+
+3. **接続先を確認**
+
+   ```bash
+   npm run db:status
+   # → ▶ Connected to: Turso · libsql://onepiece-tcg-...
+   #    全テーブル 0 件 + 「DB is empty」表示が出れば OK
+   ```
+
+4. **マイグレーション + シード一括**
+
+   ```bash
+   npm run db:bootstrap
+   # → 4 マイグレーション適用 → fixtures から 54 セット投入 → 規制取り込み
+   # 所要 3〜5 分 (Turso のラウンドトリップ分かかる)
+   ```
+
+5. **検証**
+
+   ```bash
+   npm run db:status
+   # cards 2,533 / sets 55 / restrictions 5 / pairs 3 になっていれば成功
+   npm run dev
+   # /cards, /regulations, /sets を開いて Turso 経由でデータが見える
+   ```
+
+ローカルへ戻したいときは `.env.local` の `TURSO_DATABASE_URL` を空にして
+dev サーバを再起動すれば `data/grand-line.db` を読みます。データはどちらに
+も残ります。
+
+#### Vercel デプロイ
+
+Vercel プロジェクト設定 (Settings → Environment Variables) に
+`TURSO_DATABASE_URL` と `TURSO_AUTH_TOKEN` を追加するだけで本番でも
+Turso に接続します。`@libsql/client` は HTTPS 経由で動作するので
+serverless 関数からも使えます。
 
 ### Anthropic API キー (Phase 3.5b / 4 / 4.5 で必要)
 
