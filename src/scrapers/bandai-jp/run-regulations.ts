@@ -10,7 +10,7 @@
  * scraped set is ended (effective_until = today). New rows get effective
  * _from = today. This preserves history without ever deleting a row.
  */
-import "dotenv/config";
+import "@/lib/load-env";
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";

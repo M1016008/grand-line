@@ -9,7 +9,7 @@
  * hand-authored `0001_fts5_translations.sql` are picked up automatically
  * via the journal.
  */
-import "dotenv/config";
+import "@/lib/load-env";
 
 import { mkdir } from "node:fs/promises";
 import path from "node:path";

@@ -22,7 +22,7 @@
  * run this script, get an identical seeded DB without re-fetching from
  * Bandai.
  */
-import "dotenv/config";
+import "@/lib/load-env";
 
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";

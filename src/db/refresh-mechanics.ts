@@ -8,7 +8,7 @@
  *
  *     npm run db:refresh-mechanics
  */
-import "dotenv/config";
+import "@/lib/load-env";
 
 import { eq } from "drizzle-orm";
 

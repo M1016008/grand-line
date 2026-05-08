@@ -11,7 +11,7 @@
  *   --from-fixture  parse the saved data/raw/bandai-jp/<set>.html instead of fetching
  *   --dry-run       parse only; print summary, don't touch the DB
  */
-import "dotenv/config";
+import "@/lib/load-env";
 
 import { fetchSetHtml, loadFixture } from "./fetch";
 import { parseSetHtml } from "./parse";

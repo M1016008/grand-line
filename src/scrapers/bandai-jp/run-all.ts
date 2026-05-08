@@ -18,7 +18,7 @@
  * over a network fetch when --from-fixture is on, so re-running is cheap
  * during parser iteration.
  */
-import "dotenv/config";
+import "@/lib/load-env";
 
 import { ALL_SET_CODES, fetchSetHtml, loadFixture } from "./fetch";
 import { parseSetHtml } from "./parse";
