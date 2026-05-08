@@ -49,22 +49,50 @@ const RELATION_COLOR: Record<RuleSynergy["relationType"], string> = {
 const NODE_RADIUS_LEADER = 36;
 const NODE_RADIUS_CARD = 22;
 
+type RelationType = RuleSynergy["relationType"];
+
+/** Bucket continuous strength (0..10) into 3 thickness tiers. */
+function strokeBucket(strength: number): { width: number; opacity: number } {
+  if (strength >= 7) return { width: 5, opacity: 0.9 };
+  if (strength >= 4) return { width: 3, opacity: 0.7 };
+  return { width: 1.4, opacity: 0.45 };
+}
+
 export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps) {
   const [mode, setMode] = useState<LayoutMode>("compass");
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [hoveredEdge, setHoveredEdge] = useState<string | null>(null);
+  /** When set, only edges of this relation type render. Null → show all. */
+  const [soloRelation, setSoloRelation] = useState<RelationType | null>(null);
 
   const graph: LaidOutGraph = useMemo(() => {
     if (mode === "compass") return buildCompassLayout(leader, pool, edges);
     return buildForceLayout(leader, pool, edges);
   }, [mode, leader, pool, edges]);
 
+  const visibleLinks = useMemo(() => {
+    if (!soloRelation) return graph.links;
+    return graph.links.filter((l) => l.relationType === soloRelation);
+  }, [graph.links, soloRelation]);
+
+  /** Set of node ids touched by at least one currently visible link.
+   *  Used to fade out unrelated cards when solo filter is on. */
+  const visibleNodeIds = useMemo(() => {
+    if (!soloRelation) return null;
+    const s = new Set<string>([leader.id]);
+    for (const l of visibleLinks) {
+      s.add(l.source);
+      s.add(l.target);
+    }
+    return s;
+  }, [visibleLinks, soloRelation, leader.id]);
+
   const nodeById = useMemo(
     () => new Map(graph.nodes.map((n) => [n.id, n])),
     [graph.nodes],
   );
 
-  const edgeCount = graph.links.length;
+  const edgeCount = visibleLinks.length;
   const nodeCount = graph.nodes.length;
 
   return (
@@ -97,7 +125,10 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
       <div className="border-border/30 bg-background/40 relative overflow-hidden rounded-lg border">
         <svg
           viewBox={`0 0 ${graph.width} ${graph.height}`}
-          className="h-[560px] w-full select-none"
+          className={cn(
+            "w-full select-none",
+            mode === "compass" ? "h-[560px]" : "h-[760px]",
+          )}
           role="img"
           aria-label={`${leader.name} を中心としたシナジーグラフ`}
         >
@@ -112,7 +143,7 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
 
           {/* Edges first so nodes paint on top. */}
           <g>
-            {graph.links.map((link) => {
+            {visibleLinks.map((link) => {
               const a = nodeById.get(link.source);
               const b = nodeById.get(link.target);
               if (!a || !b) return null;
@@ -124,6 +155,7 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
                 !isHoveredEdge &&
                 !isHoveredNode;
               const strokeColor = RELATION_COLOR[link.relationType];
+              const bucket = strokeBucket(link.strength);
               return (
                 <g key={link.id}>
                   <line
@@ -132,8 +164,9 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
                     x2={b.x}
                     y2={b.y}
                     stroke={strokeColor}
-                    strokeWidth={1 + (link.strength / 10) * 3}
-                    strokeOpacity={dim ? 0.1 : 0.55 + (link.strength / 10) * 0.45}
+                    strokeWidth={bucket.width}
+                    strokeLinecap="round"
+                    strokeOpacity={dim ? 0.08 : bucket.opacity}
                     style={{
                       filter:
                         isHoveredEdge || isHoveredNode
@@ -161,8 +194,11 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
           <g>
             {graph.nodes.map((node) => {
               const r = node.isLeader ? NODE_RADIUS_LEADER : NODE_RADIUS_CARD;
+              const filteredOut =
+                visibleNodeIds !== null && !visibleNodeIds.has(node.id);
               const dim =
-                hoveredNode !== null && hoveredNode !== node.id && !node.isLeader;
+                filteredOut ||
+                (hoveredNode !== null && hoveredNode !== node.id && !node.isLeader);
               return (
                 <g
                   key={node.id}
@@ -170,7 +206,7 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
                   onMouseEnter={() => setHoveredNode(node.id)}
                   onMouseLeave={() => setHoveredNode((id) => (id === node.id ? null : id))}
                   className="cursor-pointer transition-opacity"
-                  style={{ opacity: dim ? 0.35 : 1 }}
+                  style={{ opacity: dim ? (filteredOut ? 0.12 : 0.35) : 1 }}
                 >
                   <Link href={`/cards/${node.id}`}>
                     <title>
@@ -250,7 +286,7 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
         />
       </div>
 
-      <Legend />
+      <Legend solo={soloRelation} onToggle={setSoloRelation} />
     </div>
   );
 }
@@ -335,25 +371,52 @@ function HoverDetail({
   return null;
 }
 
-function Legend() {
+function Legend({
+  solo,
+  onToggle,
+}: {
+  solo: RelationType | null;
+  onToggle: (next: RelationType | null) => void;
+}) {
   return (
     <div className="text-muted-foreground mt-3 flex flex-wrap items-center gap-2 text-[11px]">
       <span className="tracking-widest uppercase">エッジ色:</span>
-      {(Object.keys(RELATION_LABEL) as Array<keyof typeof RELATION_LABEL>).map((k) => (
-        <span
-          key={k}
-          className={cn(
-            "border-border/30 inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5",
-          )}
-          style={{ borderColor: RELATION_COLOR[k] + "55" }}
+      {(Object.keys(RELATION_LABEL) as RelationType[]).map((k) => {
+        const active = solo === k;
+        const dim = solo !== null && !active;
+        return (
+          <button
+            key={k}
+            type="button"
+            onClick={() => onToggle(active ? null : k)}
+            aria-pressed={active}
+            className={cn(
+              "border-border/30 inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-2 py-0.5 transition",
+              active && "ring-foreground/40 ring-1",
+              dim && "opacity-40 hover:opacity-80",
+            )}
+            style={{
+              borderColor: RELATION_COLOR[k] + (active ? "" : "55"),
+              background: active ? RELATION_COLOR[k] + "22" : undefined,
+            }}
+          >
+            <span
+              className="inline-block h-2 w-2 rounded-full"
+              style={{ background: RELATION_COLOR[k] }}
+            />
+            {RELATION_LABEL[k]}
+          </button>
+        );
+      })}
+      {solo && (
+        <button
+          type="button"
+          onClick={() => onToggle(null)}
+          className="text-muted-foreground hover:text-foreground ml-1 rounded px-1.5 py-0.5 text-[10px] underline-offset-2 hover:underline"
         >
-          <span
-            className="inline-block h-2 w-2 rounded-full"
-            style={{ background: RELATION_COLOR[k] }}
-          />
-          {RELATION_LABEL[k]}
-        </span>
-      ))}
+          解除
+        </button>
+      )}
     </div>
   );
 }
