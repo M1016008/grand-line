@@ -20,6 +20,11 @@ interface DeckDraftState {
   setLeader: (leaderId: string | null) => void;
   add: (card: CardListItem, n?: number) => void;
   remove: (cardId: string, n?: number) => void;
+  /**
+   * Replace the entire draft with the given entries. Used by the AI
+   * proposal flow: drop whatever the user had and load the suggestion.
+   */
+  replace: (entries: DraftEntry[]) => void;
   clear: () => void;
   /** Project to the shape `validateDeck` expects. */
   asRuleCards: () => DeckRuleCard[];
@@ -63,6 +68,13 @@ export const useDeckDraft = create<DeckDraftState>()(
             },
           };
         });
+      },
+      replace(entries) {
+        const next: Record<string, DraftEntry> = {};
+        for (const e of entries) {
+          next[e.card.id] = e;
+        }
+        set({ entries: next });
       },
       clear() {
         set({ entries: {} });

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { AiDeckProposer } from "@/components/grand-line/ai-deck-proposer";
 import { ColorChip } from "@/components/grand-line/color-chip";
 import { DeckRadar } from "@/components/grand-line/deck-radar";
 import { ProbabilityPanel } from "@/components/grand-line/probability-panel";
@@ -228,6 +229,8 @@ export function DeckBuilder({ leader, pool, usingMock }: DeckBuilderProps) {
             </div>
           </CardContent>
         </Card>
+
+        <AiDeckProposer leader={leader} pool={pool} />
 
         <RuleReport violations={report.violations} legal={report.legal} />
 
