@@ -19,6 +19,7 @@
     "scrape:bandai-jp": "tsx src/scrapers/bandai-jp/run.ts",
     "scrape:bandai-jp:all": "tsx src/scrapers/bandai-jp/run-all.ts",
     "scrape:regulations": "tsx src/scrapers/bandai-jp/run-regulations.ts",
+    "scrape:discover": "tsx src/scrapers/bandai-jp/run-discover.ts",
     "test": "tsx --test 'src/**/*.test.ts'"
   },
   "dependencies": {

@@ -1,0 +1,68 @@
+# On-demand discovery of new Bandai sets.
+#
+# Bandai adds a new pack roughly every 3-4 months, so a daily/weekly
+# cron would mostly burn cycles. This workflow is manual-trigger only —
+# fire it when you hear about a new pack release.
+#
+# Behaviour: re-fetches the cardlist root, parses the dropdown, finds
+# any seriesId not already in SERIES_PARAM ∪ scrape_targets, persists
+# the new entries to scrape_targets, and immediately scrapes each one
+# so the cards land in the DB without a second manual step.
+#
+# Required repo secrets:
+#   TURSO_DATABASE_URL
+#   TURSO_AUTH_TOKEN
+#
+# Manual run: Actions → "Discover new sets" → "Run workflow".
+
+name: Discover new sets
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Only print the diff; don't write to DB"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: discover-new-sets
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Verify required secrets
+        run: |
+          if [ -z "${TURSO_DATABASE_URL:-}" ] || [ -z "${TURSO_AUTH_TOKEN:-}" ]; then
+            echo "::error::TURSO_DATABASE_URL and TURSO_AUTH_TOKEN must be set as repo secrets"
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium --with-deps
+
+      - name: Discover and scrape
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            npm run scrape:discover -- --dry-run
+          else
+            npm run scrape:discover
+          fi

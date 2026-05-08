@@ -1,0 +1,46 @@
+# CI for every push to main and every pull request.
+#
+# Runs the four checks the human runs locally before each commit:
+# typecheck, lint, build, unit tests. No DB or secrets needed — the
+# tests are pure-TS and the build doesn't connect to Turso.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: typecheck
+        run: npm run typecheck
+
+      - name: lint
+        run: npm run lint
+
+      - name: unit tests
+        run: npm test
+
+      - name: build
+        run: npm run build
