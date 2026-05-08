@@ -11,7 +11,7 @@
  */
 import "server-only";
 
-import { and, asc, eq, like, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, inArray, like, or, sql, type SQL } from "drizzle-orm";
 
 import { db } from "@/db";
 import {
@@ -429,9 +429,35 @@ async function getFromDb(id: string, language: string): Promise<CardDetail | nul
       }
     : null;
 
-  const pairBans = pairRows.map((p) => ({
-    partnerId: p.cardIdA === id ? p.cardIdB : p.cardIdA,
-  }));
+  // Look up partner card names so the pair-ban badge tooltip can read
+  // "ロロノア・ゾロ と..." instead of "OP01-001 と...". One small
+  // batched query rather than a per-pair join.
+  const partnerIds = pairRows.map((p) =>
+    p.cardIdA === id ? p.cardIdB : p.cardIdA,
+  );
+  const partnerNameRows =
+    partnerIds.length > 0
+      ? await db
+          .select({
+            cardId: cardTranslations.cardId,
+            name: cardTranslations.name,
+          })
+          .from(cardTranslations)
+          .where(
+            and(
+              inArray(cardTranslations.cardId, partnerIds),
+              eq(cardTranslations.language, "ja"),
+            ),
+          )
+      : [];
+  const partnerNameById = new Map(
+    partnerNameRows.map((row) => [row.cardId, row.name]),
+  );
+
+  const pairBans = pairRows.map((p) => {
+    const partnerId = p.cardIdA === id ? p.cardIdB : p.cardIdA;
+    return { partnerId, partnerName: partnerNameById.get(partnerId) };
+  });
 
   return {
     id: r.id,

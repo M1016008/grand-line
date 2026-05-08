@@ -82,7 +82,11 @@ export default async function CardDetailPage({ params }: PageProps) {
                   />
                 ) : null}
                 {card.pairBans.map((pb) => (
-                  <PairBanBadge key={pb.partnerId} partnerId={pb.partnerId} />
+                  <PairBanBadge
+                    key={pb.partnerId}
+                    partnerId={pb.partnerId}
+                    partnerName={pb.partnerName}
+                  />
                 ))}
                 {card.colors.map((c) => (
                   <ColorChip key={c} color={c} />
