@@ -52,6 +52,11 @@ const SERIES_PARAM: Record<string, string> = {
   EB01: "550201", EB02: "550202", EB03: "550203", EB04: "550204",
   // Premium boosters
   PRB01: "550301", PRB02: "550302",
+  // Standalone product sets (cards inside use various id prefixes;
+  // the scrapedSetCode is just a label that lets us track membership).
+  FAM: "550701", // ファミリーデッキセット
+  LIM: "550801", // 限定商品収録カード
+  PROMO: "550901", // プロモーションカード (P-NNN ids)
 };
 
 export const ALL_SET_CODES = Object.keys(SERIES_PARAM);
@@ -114,10 +119,14 @@ export const SET_NAMES_JP: Record<string, string> = {
   EB04: "エクストラブースター EGGHEAD CRISIS【EB-04】",
   PRB01: "プレミアムブースター ONE PIECE CARD THE BEST【PRB-01】",
   PRB02: "プレミアムブースター ONE PIECE CARD THE BEST vol.2【PRB-02】",
-  // Pseudo-set: promo cards have ids like P-079 with no parent pack.
-  // We never *scrape* this set directly (it's not in `SERIES_PARAM`),
-  // but the upsert layer creates the entry on demand the first time a
-  // P-NNN card is parsed out of a reprint pack.
+  // Standalone product sets (cards inside use various id prefixes; the
+  // upsert layer routes each card to its canonical set via id prefix
+  // and records the standalone product as a reprint membership).
+  FAM: "ファミリーデッキセット",
+  LIM: "限定商品収録カード",
+  PROMO: "プロモーションカード一覧",
+  // Pseudo-set used as the canonical owning set for standalone P-NNN
+  // promo cards.
   P: "プロモーションカード",
 };
 
