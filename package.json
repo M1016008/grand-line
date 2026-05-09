@@ -21,6 +21,7 @@
     "scrape:regulations": "tsx src/scrapers/bandai-jp/run-regulations.ts",
     "scrape:discover": "tsx src/scrapers/bandai-jp/run-discover.ts",
     "ai:synergy": "tsx src/ai/run-analyze-synergy.ts",
+    "ai:playstyle": "tsx src/ai/run-analyze-playstyle.ts",
     "test": "tsx --test 'src/**/*.test.ts'"
   },
   "dependencies": {
