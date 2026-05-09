@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import {
   buildCompassLayout,
   buildForceLayout,
+  buildStrategyLayout,
   type LaidOutGraph,
   type LayoutMode,
 } from "@/lib/synergy-graph";
@@ -49,6 +50,9 @@ const RELATION_COLOR: Record<RuleSynergy["relationType"], string> = {
 
 const NODE_RADIUS_LEADER = 36;
 const NODE_RADIUS_CARD = 22;
+/** Strategy view promotes "key" cards visually — bigger disc + red ring. */
+const NODE_RADIUS_KEY = 30;
+const KEY_RING_COLOR = "#ef4444";
 
 type RelationType = RuleSynergy["relationType"];
 
@@ -195,6 +199,7 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
 
   const graph: LaidOutGraph = useMemo(() => {
     if (mode === "compass") return buildCompassLayout(leader, pool, edges);
+    if (mode === "strategy") return buildStrategyLayout(leader, pool, edges);
     return buildForceLayout(leader, pool, edges);
   }, [mode, leader, pool, edges]);
 
@@ -279,8 +284,15 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
             variant="outline"
             size="sm"
           >
-            <ToggleGroupItem value="compass">シンプル</ToggleGroupItem>
-            <ToggleGroupItem value="force">詳細</ToggleGroupItem>
+            <ToggleGroupItem value="compass" title="リーダーから直結する Top8 のみを表示する羅針盤型">
+              シンプル
+            </ToggleGroupItem>
+            <ToggleGroupItem value="strategy" title="特徴 (バロックワークス・麦わら 等) でグルーピング、デッキ核となるキーカードを赤枠で強調">
+              戦略
+            </ToggleGroupItem>
+            <ToggleGroupItem value="force" title="フィルタ無しの全エッジ網状ビュー (上級者向け)">
+              詳細
+            </ToggleGroupItem>
           </ToggleGroup>
         </div>
       </header>
@@ -315,6 +327,38 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
           {/* Pan + zoom transform wraps everything below it. */}
           <g transform={`translate(${view.tx}, ${view.ty}) scale(${view.scale})`}>
 
+          {/* Strategy mode: cluster halos behind everything else.
+              Each halo is a soft rounded rect tinted with the cluster
+              colour, so the player can see "this whole region of the
+              graph belongs to the same archetype" without reading
+              labels first. */}
+          {mode === "strategy" && graph.clusters
+            ? graph.clusters.map((c) => {
+                const pad = 28;
+                const w = c.bbox.maxX - c.bbox.minX + pad * 2;
+                const h = c.bbox.maxY - c.bbox.minY + pad * 2;
+                if (w <= 0 || h <= 0) return null;
+                return (
+                  <g key={`halo-${c.id}`}>
+                    <rect
+                      x={c.bbox.minX - pad}
+                      y={c.bbox.minY - pad}
+                      width={w}
+                      height={h}
+                      rx={36}
+                      fill={c.color}
+                      fillOpacity={0.06}
+                      stroke={c.color}
+                      strokeOpacity={0.22}
+                      strokeWidth={1.5}
+                      strokeDasharray="6 6"
+                      style={{ pointerEvents: "none" }}
+                    />
+                  </g>
+                );
+              })
+            : null}
+
           {/* Edges first so nodes paint on top. */}
           <g>
             {visibleLinks.map((link) => {
@@ -330,6 +374,20 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
                 !isHoveredNode;
               const strokeColor = RELATION_COLOR[link.relationType];
               const bucket = strokeBucket(link.strength);
+              // Strategy mode: peer-to-peer edges (neither endpoint is
+              // the leader) are visually de-emphasised so the leader
+              // spokes stay legible. Within-cluster peer edges fade
+              // even more — they're "obvious" same-archetype links.
+              const touchesLeader = a.isLeader || b.isLeader;
+              const sameCluster =
+                a.clusterId !== undefined &&
+                a.clusterId === b.clusterId;
+              const peerScale =
+                mode === "strategy" && !touchesLeader
+                  ? sameCluster
+                    ? 0.35
+                    : 0.55
+                  : 1;
               return (
                 <g key={link.id}>
                   <line
@@ -338,9 +396,11 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
                     x2={b.x}
                     y2={b.y}
                     stroke={strokeColor}
-                    strokeWidth={bucket.width}
+                    strokeWidth={bucket.width * peerScale}
                     strokeLinecap="round"
-                    strokeOpacity={dim ? 0.08 : bucket.opacity}
+                    strokeOpacity={
+                      dim ? 0.08 : bucket.opacity * peerScale
+                    }
                     style={{
                       filter:
                         isHoveredEdge || isHoveredNode
@@ -367,7 +427,14 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
           {/* Nodes. */}
           <g>
             {graph.nodes.map((node) => {
-              const r = node.isLeader ? NODE_RADIUS_LEADER : NODE_RADIUS_CARD;
+              // Strategy view promotes "key" cards visually with a bigger
+              // disc + red ring + glow so the eye lands on them first.
+              const showKeyTreatment = mode === "strategy" && node.isKey;
+              const r = node.isLeader
+                ? NODE_RADIUS_LEADER
+                : showKeyTreatment
+                  ? NODE_RADIUS_KEY
+                  : NODE_RADIUS_CARD;
               const filteredOut =
                 visibleNodeIds !== null && !visibleNodeIds.has(node.id);
               const dim =
@@ -385,22 +452,29 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
                   <Link href={`/cards/${node.id}`}>
                     <title>
                       {node.card.name} ({node.card.id})
+                      {showKeyTreatment ? " · 🔑 KEY" : ""}
                     </title>
-                    {/* Outer ring — colour cues whether this is the leader
-                        or a coloured archetype card. */}
+                    {/* Outer ring — colour cues whether this is the leader,
+                        a key card, or a regular partner. */}
                     <circle
-                      r={r + 4}
+                      r={r + (showKeyTreatment ? 5 : 4)}
                       fill="var(--color-background)"
                       stroke={
                         node.isLeader
                           ? "var(--color-primary)"
-                          : nodeStrokeFor(node.card)
+                          : showKeyTreatment
+                            ? KEY_RING_COLOR
+                            : nodeStrokeFor(node.card)
                       }
-                      strokeWidth={node.isLeader ? 2.5 : 1.5}
+                      strokeWidth={
+                        node.isLeader ? 2.5 : showKeyTreatment ? 3 : 1.5
+                      }
                       style={{
                         filter: node.isLeader
                           ? "drop-shadow(0 0 12px var(--color-primary))"
-                          : undefined,
+                          : showKeyTreatment
+                            ? `drop-shadow(0 0 8px ${KEY_RING_COLOR})`
+                            : undefined,
                       }}
                     />
                     {node.card.imageUrlJp ? (
@@ -449,6 +523,51 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
               );
             })}
           </g>
+
+          {/* Strategy mode: cluster labels — drawn last so they sit on
+              top of edges + halos. Each label tells the player which
+              archetype that wedge represents (e.g. "バロックワークス"). */}
+          {mode === "strategy" && graph.clusters
+            ? graph.clusters.map((c) => (
+                <g key={`label-${c.id}`} style={{ pointerEvents: "none" }}>
+                  <rect
+                    x={c.labelX - (c.label.length * 8 + 28)}
+                    y={c.labelY - 18}
+                    width={c.label.length * 16 + 56}
+                    height={36}
+                    rx={18}
+                    fill="var(--color-background)"
+                    fillOpacity={0.85}
+                    stroke={c.color}
+                    strokeWidth={1.5}
+                    strokeOpacity={0.7}
+                  />
+                  <text
+                    x={c.labelX}
+                    y={c.labelY + 1}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fontSize={15}
+                    fontWeight={700}
+                    fill={c.color}
+                    fontFamily="var(--font-display), serif"
+                  >
+                    {c.label}
+                  </text>
+                  <text
+                    x={c.labelX}
+                    y={c.labelY + 22}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fontSize={10}
+                    fill="var(--color-muted-foreground)"
+                    fontFamily="var(--font-mono), monospace"
+                  >
+                    {c.cardCount} 枚
+                  </text>
+                </g>
+              ))
+            : null}
           </g>
         </svg>
 
