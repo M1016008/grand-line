@@ -268,3 +268,125 @@ function shareFeatures(a: CardListItem, b: CardListItem): boolean {
   const setA = new Set(a.features);
   return b.features.some((f) => setA.has(f));
 }
+
+/* ──────────────────────────────────────────────────────────────────────── */
+/* Card-relative compatibility (no leader required)                          */
+/* ──────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Find rule-based synergies relative to a single card. Used by the card
+ * detail page's "相性の良いカード Top 5" section, which doesn't have a
+ * leader anchor — we want to surface compatible cards across the whole
+ * pool regardless of who the leader is.
+ *
+ * Logic mirrors the leader-relative detectors but flips the perspective:
+ * the *target* card is one endpoint of every emitted edge.
+ *
+ * Caller is expected to pre-filter `pool` (e.g. drop other LEADER cards
+ * if it wants character/event/stage-only results).
+ */
+export function detectCompatibilityFor(
+  target: CardListItem,
+  pool: CardListItem[],
+): RuleSynergy[] {
+  const out: RuleSynergy[] = [];
+  const targetIsDefender =
+    target.cardType === "CHARACTER" &&
+    (target.mechanics.includes("Blocker") || (target.counter ?? 0) >= 2000);
+  const targetIsAggressor =
+    target.mechanics.includes("Rush") ||
+    target.mechanics.includes("OnAttack") ||
+    target.mechanics.includes("PowerBuff");
+  const targetIsEnabler = target.mechanics.some(
+    (m) => m === "Search" || m === "Look" || m === "Draw",
+  );
+  const targetIsFinisher =
+    (target.cost ?? 0) >= 6 || target.mechanics.includes("Rush");
+
+  for (const other of pool) {
+    if (other.id === target.id) continue;
+    const shared = target.features.filter((f) => other.features.includes(f));
+
+    // Defense combo — both defenders + share an archetype.
+    const otherIsDefender =
+      other.cardType === "CHARACTER" &&
+      (other.mechanics.includes("Blocker") || (other.counter ?? 0) >= 2000);
+    if (targetIsDefender && otherIsDefender && shared.length > 0) {
+      out.push({
+        fromCardId: target.id,
+        toCardId: other.id,
+        relationType: "defense_combo",
+        strength: 5,
+        reasoningJa: `2まいともあいてのこうげきを止めるカード。ならべておくと、相手の大ダメージを何回でもブロックできるよ。`,
+        reasoningEn: `Both are defensive (Blocker / counter ≥2000) sharing the ${shared[0]} archetype.`,
+      });
+    }
+
+    // Tempo combo — both aggressors + share an archetype.
+    const otherIsAggressor =
+      other.mechanics.includes("Rush") ||
+      other.mechanics.includes("OnAttack") ||
+      other.mechanics.includes("PowerBuff");
+    if (targetIsAggressor && otherIsAggressor && shared.length > 0) {
+      out.push({
+        fromCardId: target.id,
+        toCardId: other.id,
+        relationType: "tempo_combo",
+        strength: 4,
+        reasoningJa: `2まいともすぐにこうげきできる速攻系。ターンの最初から相手にプレッシャーをかけて、ライフをけずれるよ。`,
+        reasoningEn: `Both push tempo (Rush/OnAttack/PowerBuff) sharing ${shared[0]}.`,
+      });
+    }
+
+    // Resource → finisher (both directions: target as enabler or finisher).
+    const otherIsEnabler = other.mechanics.some(
+      (m) => m === "Search" || m === "Look" || m === "Draw",
+    );
+    const otherIsFinisher =
+      (other.cost ?? 0) >= 6 || other.mechanics.includes("Rush");
+    if (targetIsEnabler && otherIsFinisher && shared.length > 0 && other.id !== target.id) {
+      out.push({
+        fromCardId: target.id,
+        toCardId: other.id,
+        relationType: "resource_engine",
+        strength: 5,
+        reasoningJa: `${target.name} でデッキから${other.name}をさがして引きこめる。フィニッシャーまでスムーズにつなげるコンボ。`,
+        reasoningEn: `${target.name} (search/draw) chains into finisher ${other.name}.`,
+      });
+    } else if (targetIsFinisher && otherIsEnabler && shared.length > 0) {
+      out.push({
+        fromCardId: other.id,
+        toCardId: target.id,
+        relationType: "resource_engine",
+        strength: 5,
+        reasoningJa: `${other.name} でデッキから${target.name}をさがして手に入れられる。大きなフィニッシャーをにぎるコンボ。`,
+        reasoningEn: `${other.name} (search/draw) reaches finisher ${target.name}.`,
+      });
+    }
+
+    // Feature chain — non-leader cards sharing ≥2 features.
+    if (
+      target.cardType !== "LEADER" &&
+      other.cardType !== "LEADER" &&
+      shared.length >= 2
+    ) {
+      out.push({
+        fromCardId: target.id,
+        toCardId: other.id,
+        relationType: "feature_chain",
+        strength: 3,
+        reasoningJa: `「${shared.slice(0, 2).join("」「")}」のとくちょうをいっしょに持ってる仲間カード。同じデッキに入れると場がそろうよ。`,
+        reasoningEn: `Shares ${shared.length} features with ${target.name}.`,
+      });
+    }
+  }
+
+  // Dedup on (from, to, relationType), strongest wins.
+  const merged = new Map<string, RuleSynergy>();
+  for (const e of out) {
+    const key = `${e.fromCardId}::${e.toCardId}::${e.relationType}`;
+    const existing = merged.get(key);
+    if (!existing || e.strength > existing.strength) merged.set(key, e);
+  }
+  return [...merged.values()];
+}

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { CompatibleCardsSection } from "@/components/grand-line/compatible-cards-section";
 import { SiteHeader } from "@/components/grand-line/site-header";
 import { ColorChip } from "@/components/grand-line/color-chip";
 import { PairBanBadge, RestrictionBadge } from "@/components/grand-line/restriction-badge";
@@ -11,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { getCard } from "@/lib/cards";
+import { getCompatibleCards } from "@/lib/card-compat";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -28,6 +30,11 @@ export default async function CardDetailPage({ params }: PageProps) {
   const { id } = await params;
   const card = await getCard(id);
   if (!card) notFound();
+
+  // Fetched in parallel via the page-level Promise.all would be ideal,
+  // but `getCard` resolves first as a hard 404 gate — keep it sequential
+  // so we don't waste a 5000-row query on a missing id.
+  const compatible = await getCompatibleCards(card.id, 5);
 
   const stats: Array<[string, string | number | null]> = [
     ["コスト", card.cost],
@@ -200,6 +207,8 @@ export default async function CardDetailPage({ params }: PageProps) {
             ) : null}
           </div>
         </div>
+
+        <CompatibleCardsSection results={compatible} />
       </main>
     </>
   );
