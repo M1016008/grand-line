@@ -37,12 +37,17 @@ export async function getSynergyGraph(leaderId: string): Promise<SynergyGraphDat
   const leader = all.cards.find((c) => c.id === leaderId);
   if (!leader || leader.cardType !== "LEADER") return null;
 
-  // Restrict the candidate pool to cards that share at least one colour
-  // with the leader — synergy edges between off-colour cards are
-  // structurally invalid for the deck builder anyway.
+  // Restrict the candidate pool to cards that:
+  //   - share at least one colour with the leader (synergy edges between
+  //     off-colour cards are structurally invalid for the deck builder), and
+  //   - are not themselves LEADER cards. Leaders can't go in another
+  //     leader's deck, so a leader→leader edge (e.g. イム → ペローナ) is
+  //     misleading even when the rule detector finds shared features.
   const leaderColors = new Set(leader.colors);
   const pool = all.cards.filter(
-    (c) => c.colors.some((col) => leaderColors.has(col)),
+    (c) =>
+      c.cardType !== "LEADER" &&
+      c.colors.some((col) => leaderColors.has(col)),
   );
 
   const ruleEdges = detectRuleSynergies(leader, pool);

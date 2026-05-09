@@ -290,7 +290,10 @@ export function SynergyGraph({ leader, pool, edges, source }: SynergyGraphProps)
           ref={svgRef}
           viewBox={`0 0 ${graph.width} ${graph.height}`}
           className={cn(
-            "h-[820px] w-full touch-none select-none",
+            // Cap the canvas to whatever the viewport can show without
+            // scrolling — otherwise the leader at viewBox center lands
+            // below the fold and looks "biased" toward the bottom.
+            "h-[min(820px,calc(100svh-220px))] min-h-[480px] w-full touch-none select-none",
             isDragging ? "cursor-grabbing" : "cursor-grab",
           )}
           role="img"
