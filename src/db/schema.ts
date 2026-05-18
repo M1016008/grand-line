@@ -531,6 +531,316 @@ export const deckGamePlans = sqliteTable("deck_game_plans", {
 });
 
 /* ──────────────────────────────────────────────────────────────────────── */
+/* §5.3b Game engine — Effect DSL, simulations, replays, drills             */
+/* ──────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Machine-readable card effect, stored as a JSON DSL validated at runtime
+ * by Zod (`src/lib/engine/effect-dsl.ts`).
+ *
+ * Kept in a separate table from `cards` so that effect implementation can
+ * evolve independently from the canonical card facts. A card without a
+ * row here is treated as **unplayable** by the engine — that protects
+ * against the rules engine silently executing partially-modelled cards.
+ *
+ * `is_vanilla = 1` is an explicit declaration that the card has no
+ * triggered ability and no activated effect; the engine can run it
+ * without consulting the DSL. `has_ts_handler = 1` flags cards whose
+ * effect exceeds the DSL's expressive power and is implemented as
+ * TypeScript code in `src/lib/engine/card-handlers/<id>.ts`.
+ *
+ * `verified = 0` rows must NOT be loaded by the engine in scoring runs;
+ * they are draft data for human review.
+ */
+export const cardEffects = sqliteTable(
+  "card_effects",
+  {
+    cardId: text()
+      .primaryKey()
+      .references(() => cards.id, { onDelete: "cascade" }),
+    /** JSON payload validated against the Effect DSL Zod schema. */
+    dslJson: text({ mode: "json" })
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    /** DSL schema version (semver) so we can migrate later. */
+    dslVersion: text().notNull(),
+    isVanilla: integer({ mode: "boolean" }).notNull().default(false),
+    hasTsHandler: integer({ mode: "boolean" }).notNull().default(false),
+    /** 0 = draft, 1 = human-approved and engine-safe. */
+    verified: integer({ mode: "boolean" }).notNull().default(false),
+    authoredBy: text({ enum: ["human", "ai_draft"] }).notNull(),
+    aiModelVersion: text(),
+    notes: text(),
+    createdAt: integer({ mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+    updatedAt: integer({ mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+  (t) => [
+    index("idx_card_effects_verified").on(t.verified),
+    /* A card cannot simultaneously be vanilla AND have a TS handler. */
+    check(
+      "ck_card_effects_vanilla_xor_handler",
+      sql`NOT (${t.isVanilla} = 1 AND ${t.hasTsHandler} = 1)`,
+    ),
+  ],
+);
+
+/**
+ * A batch of N games run with a fixed configuration. The basic unit of
+ * analysis: ablation, mulligan accuracy, matchup win-rate are all
+ * computed against a single `simulation_runs` row.
+ *
+ * `seed_base` enables paired-RNG comparisons: when running an ablation
+ * (deck X vs deck X-with-one-swap), two runs sharing the same seed_base
+ * generate identical RNG sequences per game_index, so observed win-rate
+ * differences are attributable to the swap rather than draw variance.
+ */
+export const simulationRuns = sqliteTable(
+  "simulation_runs",
+  {
+    id: text().primaryKey(),
+    leaderAId: text()
+      .notNull()
+      .references(() => cards.id, { onDelete: "restrict" }),
+    leaderBId: text()
+      .notNull()
+      .references(() => cards.id, { onDelete: "restrict" }),
+    /** Reference to a stored deck; nullable for ad-hoc deck lists. */
+    deckAId: text().references(() => decks.id, { onDelete: "set null" }),
+    deckBId: text().references(() => decks.id, { onDelete: "set null" }),
+    /** Snapshot of the deck list at run time (defensive against deck edits). */
+    deckASnapshotJson: text({ mode: "json" })
+      .$type<Array<{ cardId: string; count: number }>>()
+      .notNull(),
+    deckBSnapshotJson: text({ mode: "json" })
+      .$type<Array<{ cardId: string; count: number }>>()
+      .notNull(),
+    nGames: integer().notNull(),
+    seedBase: text().notNull(),
+    cpuAMode: text({
+      enum: ["fast", "strong", "coach", "human"],
+    }).notNull(),
+    cpuBMode: text({
+      enum: ["fast", "strong", "coach", "human"],
+    }).notNull(),
+    /** Ablation: card whose copies were swapped out in deck A. */
+    ablationTargetCardId: text().references(() => cards.id, {
+      onDelete: "set null",
+    }),
+    ablationReplacementCardId: text().references(() => cards.id, {
+      onDelete: "set null",
+    }),
+    engineVersion: text().notNull(),
+    notes: text(),
+    /** Pre-computed summary (winrate, avg turns, etc.) for fast UI. */
+    summaryJson: text({ mode: "json" })
+      .$type<Record<string, unknown>>()
+      .default(sql`(json('{}'))`),
+    createdAt: integer({ mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+    finishedAt: integer({ mode: "timestamp" }),
+  },
+  (t) => [
+    index("idx_sim_runs_leaders").on(t.leaderAId, t.leaderBId),
+    index("idx_sim_runs_created").on(t.createdAt),
+    check("ck_sim_runs_n_games_positive", sql`${t.nGames} > 0`),
+  ],
+);
+
+/**
+ * A single completed game inside a simulation_run. `rng_seed` is derived
+ * deterministically from `simulation_runs.seed_base` + `game_index` so a
+ * game can be re-run bit-for-bit identically.
+ */
+export const games = sqliteTable(
+  "games",
+  {
+    id: text().primaryKey(),
+    runId: text()
+      .notNull()
+      .references(() => simulationRuns.id, { onDelete: "cascade" }),
+    gameIndex: integer().notNull(),
+    rngSeed: text().notNull(),
+    goFirst: text({ enum: ["A", "B"] }).notNull(),
+    winner: text({ enum: ["A", "B", "DRAW"] }),
+    endCondition: text({
+      enum: ["LIFE_OUT", "DECK_OUT", "EFFECT", "TIMEOUT", "ERROR"],
+    }),
+    turns: integer(),
+    /** Compact end-state snapshot for replay UI without re-running events. */
+    finalStateJson: text({ mode: "json" }).$type<Record<string, unknown>>(),
+    startedAt: integer({ mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+    finishedAt: integer({ mode: "timestamp" }),
+  },
+  (t) => [
+    index("idx_games_run").on(t.runId),
+    uniqueIndex("uq_games_run_index").on(t.runId, t.gameIndex),
+  ],
+);
+
+/**
+ * Per-event replay log. Replaying the engine over the events of a game
+ * (in `seq` order, starting from the rng_seed) must reproduce the final
+ * state exactly — this is the bedrock determinism guarantee that makes
+ * paired-RNG ablation analysis trustworthy.
+ *
+ * `state_hash` is a content hash of the post-event GameState, used by
+ * the MCTS transposition table to recognize equivalent positions across
+ * different play orderings.
+ */
+export const gameEvents = sqliteTable(
+  "game_events",
+  {
+    id: integer().primaryKey({ autoIncrement: true }),
+    gameId: text()
+      .notNull()
+      .references(() => games.id, { onDelete: "cascade" }),
+    /** 0-indexed sequence number within the game (replay order). */
+    seq: integer().notNull(),
+    turn: integer().notNull(),
+    /** REFRESH / DRAW / DON / MAIN / BATTLE / END / SETUP / MULLIGAN */
+    phase: text().notNull(),
+    actor: text({ enum: ["A", "B", "SYSTEM"] }).notNull(),
+    /** Structured event tag — see EngineEvent union in src/lib/engine. */
+    eventType: text().notNull(),
+    payloadJson: text({ mode: "json" }).$type<Record<string, unknown>>(),
+    stateHash: text(),
+  },
+  (t) => [
+    index("idx_events_game_seq").on(t.gameId, t.seq),
+    index("idx_events_event_type").on(t.eventType),
+    uniqueIndex("uq_events_game_seq").on(t.gameId, t.seq),
+  ],
+);
+
+/**
+ * Denormalized card-level event stream for fast analytics queries.
+ * A subset of `game_events` (the ones that touch a specific card),
+ * exploded into a flat shape so the analytics layer can avoid JSON
+ * parsing on hot paths like "ablation deltas across 100 games".
+ */
+export const cardPlays = sqliteTable(
+  "card_plays",
+  {
+    id: integer().primaryKey({ autoIncrement: true }),
+    gameId: text()
+      .notNull()
+      .references(() => games.id, { onDelete: "cascade" }),
+    turn: integer().notNull(),
+    actor: text({ enum: ["A", "B"] }).notNull(),
+    cardId: text()
+      .notNull()
+      .references(() => cards.id, { onDelete: "restrict" }),
+    action: text({
+      enum: [
+        "PLAY",
+        "ACTIVATE",
+        "COUNTER",
+        "TRIGGER",
+        "ATTACH_DON",
+        "ATTACK",
+        "BLOCK",
+        "KO",
+        "DRAW",
+        "DISCARD",
+      ],
+    }).notNull(),
+    /** Free-text outcome tag (e.g. "killed_opp_5cost", "blocked_lethal"). */
+    outcome: text(),
+  },
+  (t) => [
+    index("idx_card_plays_card").on(t.cardId, t.action),
+    index("idx_card_plays_game_turn").on(t.gameId, t.turn),
+  ],
+);
+
+/**
+ * Pre-computed analysis aggregates so dashboards don't recompute on
+ * every page load. `breakdown_json` lets a single metric carry
+ * arbitrarily-nested groupings (per matchup, per turn, per card).
+ */
+export const analysisResults = sqliteTable(
+  "analysis_results",
+  {
+    id: integer().primaryKey({ autoIncrement: true }),
+    runId: text()
+      .notNull()
+      .references(() => simulationRuns.id, { onDelete: "cascade" }),
+    /** winrate | mulligan_keep_score | go_first_advantage | card_contribution_delta | trigger_success_rate | ... */
+    metric: text().notNull(),
+    breakdownJson: text({ mode: "json" }).$type<Record<string, unknown>>(),
+    value: real(),
+    computedAt: integer({ mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+  (t) => [
+    index("idx_analysis_run_metric").on(t.runId, t.metric),
+  ],
+);
+
+/**
+ * A "position drill" — a frozen mid-game GameState the user is asked to
+ * find the best play in. Generated either by sampling a real game state
+ * (`source = generated`) or hand-authored (`source = curated`).
+ */
+export const drills = sqliteTable(
+  "drills",
+  {
+    id: text().primaryKey(),
+    leaderCardId: text()
+      .notNull()
+      .references(() => cards.id, { onDelete: "restrict" }),
+    donCount: integer().notNull(),
+    handCount: integer().notNull(),
+    /** Serialized GameState — see src/lib/engine/state.ts. */
+    stateSnapshotJson: text({ mode: "json" })
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    /** Engine-derived optimal play (action sequence), if pre-computed. */
+    optimalPlayJson: text({ mode: "json" })
+      .$type<Record<string, unknown>>(),
+    /** Claude's natural-language explanation of why the optimal play is optimal. */
+    claudeRationale: text(),
+    difficulty: text({ enum: ["easy", "normal", "hard"] }),
+    source: text({ enum: ["generated", "curated"] }).notNull(),
+    aiModelVersion: text(),
+    createdAt: integer({ mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+  (t) => [
+    index("idx_drills_leader").on(t.leaderCardId),
+    index("idx_drills_don_hand").on(t.donCount, t.handCount),
+  ],
+);
+
+export const drillAttempts = sqliteTable(
+  "drill_attempts",
+  {
+    id: integer().primaryKey({ autoIncrement: true }),
+    drillId: text()
+      .notNull()
+      .references(() => drills.id, { onDelete: "cascade" }),
+    userPlayJson: text({ mode: "json" })
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    score: real(),
+    claudeFeedback: text(),
+    createdAt: integer({ mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+  (t) => [index("idx_drill_attempts_drill").on(t.drillId)],
+);
+
+/* ──────────────────────────────────────────────────────────────────────── */
 /* §5.4 Meta decks (opponent analysis input)                                */
 /* ──────────────────────────────────────────────────────────────────────── */
 
