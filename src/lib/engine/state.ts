@@ -36,6 +36,51 @@
 
 import type { TriggeredEffect } from "./effect-dsl";
 
+/* ──────────────────────────────────────────────────────────────────────── */
+/* Card registry — the engine's read-only view of card facts.               */
+/*                                                                          */
+/* The DB is the source of truth, but the rules engine itself must be       */
+/* framework-free (AGENTS.md). So we abstract: callers pass in a            */
+/* `CardRegistry` constructed however they like — from the DB at runtime,   */
+/* from in-memory mocks in tests, from JSON fixtures in CLI bulk runs.      */
+/* ──────────────────────────────────────────────────────────────────────── */
+
+export interface CardData {
+  readonly id: string;
+  readonly cardType: "LEADER" | "CHARACTER" | "EVENT" | "STAGE" | "DON";
+  readonly colors: readonly string[];
+  readonly features: readonly string[];
+  readonly mechanics: readonly string[];
+  readonly cost: number | null;
+  readonly power: number | null;
+  readonly counter: number | null;
+  readonly life: number | null;
+  readonly hasTrigger: boolean;
+  /** Parsed Effect DSL, if implemented. Undefined → unimplemented / vanilla. */
+  readonly effect?: TriggeredEffect[];
+}
+
+export interface CardRegistry {
+  get(cardId: string): CardData;
+  has(cardId: string): boolean;
+}
+
+/** Build a registry from a flat array (test/CLI use). */
+export function makeRegistry(cards: readonly CardData[]): CardRegistry {
+  const map = new Map<string, CardData>();
+  for (const c of cards) map.set(c.id, c);
+  return {
+    get(id) {
+      const c = map.get(id);
+      if (!c) throw new Error(`unknown card id: ${id}`);
+      return c;
+    },
+    has(id) {
+      return map.has(id);
+    },
+  };
+}
+
 /** A single instance of a card in play. Multiple copies → multiple instances. */
 export interface CardInstance {
   readonly instanceId: string;
