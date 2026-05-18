@@ -34,7 +34,11 @@
  *   └─ Trash
  */
 
-import type { TriggeredEffect } from "./effect-dsl";
+import type {
+  EffectAction,
+  TriggeredEffect,
+  TriggerEventName,
+} from "./effect-dsl";
 
 /* ──────────────────────────────────────────────────────────────────────── */
 /* Card registry — the engine's read-only view of card facts.               */
@@ -154,14 +158,61 @@ export type Phase =
   | "END"
   | "GAME_OVER";
 
-/** Stack frame for in-resolution effects (triggers, counters). */
-export interface PendingEffect {
-  readonly source: "ON_PLAY" | "ON_KO" | "WHEN_ATTACKING" | "WHEN_ATTACKED" | "TRIGGER" | "COUNTER";
+/**
+ * A frame of in-flight effect resolution.
+ *
+ * When ON_PLAY (or any other trigger) fires, the engine pushes a frame
+ * onto `pendingEffects` containing the action list to resolve. The
+ * interpreter advances `actionIndex` as each action completes. Nested
+ * actions (`if` body, chosen `choose_one` mode, `for_each` iteration)
+ * are realized by pushing additional frames on top of the stack — the
+ * top frame is always the one currently resolving.
+ *
+ * The stack design keeps the interpreter simple and gives a clean
+ * suspend-resume point when player choice is required: just snapshot
+ * the stack, set `pendingChoice`, return; resume by clearing the
+ * choice and re-entering the processor.
+ */
+export interface ResolutionFrame {
+  readonly triggerKind: TriggerEventName;
+  /** Instance id of the card whose effect this is (for isSelf, ON_KO, etc.). */
   readonly sourceInstanceId: string;
-  /** The triggered effect payload — typed against the Effect DSL. */
-  readonly effect: TriggeredEffect;
   readonly controller: "A" | "B";
+  readonly actions: readonly EffectAction[];
+  readonly actionIndex: number;
+  /** Free-text label for debugging — usually the card's summary or DSL summary. */
+  readonly label?: string;
 }
+
+/**
+ * The kinds of choices the interpreter can ask of a player.
+ *
+ * Engine-supplied choices are always finite and enumerable: we never
+ * ask the player "type any value here". CPU policies and human UIs
+ * both consume this shape.
+ */
+export type ChoiceRequest =
+  | {
+      readonly kind: "TARGET_PICK";
+      readonly chooser: "A" | "B";
+      /** Instance ids the chooser must select from. */
+      readonly options: readonly string[];
+      /** Inclusive bounds on the number of picks. */
+      readonly minPick: number;
+      readonly maxPick: number;
+      readonly prompt?: string;
+    }
+  | {
+      readonly kind: "MODAL_PICK";
+      readonly chooser: "A" | "B";
+      readonly modeIds: readonly string[];
+      readonly prompt?: string;
+    }
+  | {
+      readonly kind: "YES_NO";
+      readonly chooser: "A" | "B";
+      readonly prompt?: string;
+    };
 
 /** A live attack declaration awaiting resolution. */
 export interface ActiveAttack {
@@ -238,8 +289,13 @@ export interface GameState {
   readonly goFirst: "A" | "B";
   /** A and B player states. */
   readonly players: { readonly A: PlayerState; readonly B: PlayerState };
-  /** Stack of effects waiting to resolve. */
-  readonly pendingEffects: readonly PendingEffect[];
+  /** Stack of in-flight effect resolutions; top of array = top of stack. */
+  readonly pendingEffects: readonly ResolutionFrame[];
+  /**
+   * Player choice the interpreter is waiting on. While non-null, no game
+   * action other than RESOLVE_CHOICE (and game-over checks) is legal.
+   */
+  readonly pendingChoice: ChoiceRequest | null;
   /** The current attack, if BATTLE phase mid-resolution. */
   readonly activeAttack: ActiveAttack | null;
   /** Memory of events that happened during the current turn (reset on TURN_START). */
@@ -257,7 +313,7 @@ export interface GameState {
   readonly eventSeq: number;
 }
 
-/** Engine events. Mirrors `game_events.event_type` strings. Phase A-2 will extend. */
+/** Engine events. Mirrors `game_events.event_type` strings. */
 export type EngineEventType =
   | "GAME_START"
   | "MULLIGAN_DECIDE"
@@ -270,6 +326,9 @@ export type EngineEventType =
   | "CARD_PLAYED"
   | "EFFECT_TRIGGERED"
   | "EFFECT_RESOLVED"
+  | "EFFECT_ACTION"
+  | "CHOICE_REQUIRED"
+  | "CHOICE_RESOLVED"
   | "ATTACK_DECLARED"
   | "BLOCK_DECLARED"
   | "COUNTER_PLAYED"

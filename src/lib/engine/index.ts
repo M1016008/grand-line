@@ -43,3 +43,16 @@ export {
   type FilterContext,
   type LocatedInstance,
 } from "./filters";
+
+export {
+  applyChoiceResolution,
+  enqueueTriggeredEffect,
+  evaluateCondition,
+  processPendingEffects,
+  resumeAfterChoice,
+  type ChoiceResolution,
+  type EffectResult,
+  type ModalPickResolution,
+  type TargetPickResolution,
+  type YesNoResolution,
+} from "./effects";

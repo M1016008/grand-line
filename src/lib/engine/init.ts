@@ -164,6 +164,7 @@ export function initGame(config: InitConfig): GameState {
     goFirst: config.goFirst,
     players: { A: playerA, B: playerB },
     pendingEffects: [],
+    pendingChoice: null,
     activeAttack: null,
     turnLog: EMPTY_TURN_LOG,
     winner: null,

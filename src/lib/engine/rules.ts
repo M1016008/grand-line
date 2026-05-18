@@ -40,6 +40,12 @@
 import { createRng } from "./rng";
 import { ENGINE_VERSION } from "./version";
 import {
+  applyChoiceResolution,
+  enqueueTriggeredEffect,
+  processPendingEffects,
+  type ChoiceResolution,
+} from "./effects";
+import {
   EMPTY_TURN_LOG,
   type ActiveAttack,
   type CardInstance,
@@ -81,7 +87,8 @@ export type GameAction =
       readonly counterHandInstanceId: string | null;
     }
   | { readonly type: "PASS_PHASE" }
-  | { readonly type: "END_TURN" };
+  | { readonly type: "END_TURN" }
+  | { readonly type: "RESOLVE_CHOICE"; readonly resolution: ChoiceResolution };
 
 export interface ApplyResult {
   readonly state: GameState;
@@ -431,10 +438,35 @@ function applyPlayCharacter(
     cost: data.cost,
   });
   next = ev.state;
+  const events: EngineEvent[] = [ev.event];
 
-  // NOTE Phase B: enqueue ON_PLAY triggered effects here.
-
-  return { state: next, events: [ev.event] };
+  // Enqueue ON_PLAY triggered effects, then drive the interpreter as far
+  // as it'll go (it'll suspend on the first required choice, if any).
+  for (const eff of data.effect ?? []) {
+    if (eff.on !== "ON_PLAY") continue;
+    // Trigger-time gate (condition on the whole effect).
+    if (eff.cost) {
+      // Phase B-2: pay attachedDonRequired / donFromArea / restThis here.
+    }
+    const evTrig = emit(next, "EFFECT_TRIGGERED", who, {
+      cardId: found.card.cardId,
+      instanceId: found.card.instanceId,
+      on: "ON_PLAY",
+    });
+    next = evTrig.state;
+    events.push(evTrig.event);
+    next = enqueueTriggeredEffect(next, eff, {
+      triggerKind: "ON_PLAY",
+      sourceInstanceId: found.card.instanceId,
+      controller: who,
+    });
+  }
+  if (next.pendingEffects.length > 0) {
+    const r = processPendingEffects(next, registry);
+    next = r.state;
+    events.push(...r.events);
+  }
+  return { state: next, events };
 }
 
 function applyAttachDon(
@@ -903,6 +935,11 @@ export function applyAction(
       `engine version mismatch: state=${state.engineVersion}, runtime=${ENGINE_VERSION}`,
     );
   }
+  if (state.pendingChoice && action.type !== "RESOLVE_CHOICE") {
+    throw new Error(
+      `engine is waiting for RESOLVE_CHOICE (kind=${state.pendingChoice.kind})`,
+    );
+  }
   switch (action.type) {
     case "MULLIGAN_DECIDE":
       return applyMulligan(state, action);
@@ -910,8 +947,8 @@ export function applyAction(
       return applyPlayCharacter(state, action, registry);
     case "PLAY_EVENT":
     case "PLAY_STAGE":
-      // Phase B will resolve these via the DSL interpreter.
-      throw new Error(`${action.type} not yet implemented (Phase B)`);
+      // Phase B-2 will resolve these via the DSL interpreter.
+      throw new Error(`${action.type} not yet implemented (Phase B-2)`);
     case "ATTACH_DON":
       return applyAttachDon(state, action);
     case "DECLARE_ATTACK":
@@ -924,6 +961,8 @@ export function applyAction(
       return applyPassPhase(state, registry);
     case "END_TURN":
       return applyEndTurn(state);
+    case "RESOLVE_CHOICE":
+      return applyChoiceResolution(state, action.resolution, registry);
   }
   // exhaustiveness check — TS will flag if a case is missed.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
