@@ -56,3 +56,6 @@ export {
   type TargetPickResolution,
   type YesNoResolution,
 } from "./effects";
+
+export { createFastCpu, type CpuPolicy } from "./cpu/fast";
+export { runGame, type RunGameConfig, type RunGameResult } from "./runner";
