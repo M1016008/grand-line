@@ -75,6 +75,11 @@ export type GameAction =
   | { readonly type: "PLAY_CHARACTER"; readonly handInstanceId: string }
   | { readonly type: "PLAY_EVENT"; readonly handInstanceId: string }
   | { readonly type: "PLAY_STAGE"; readonly handInstanceId: string }
+  | {
+      /** Activate a card's ACTIVATE_MAIN effect (typically stages or leaders). */
+      readonly type: "ACTIVATE_EFFECT";
+      readonly instanceId: string;
+    }
   | { readonly type: "ATTACH_DON"; readonly target: "leader" | { readonly instanceId: string } }
   | {
       readonly type: "DECLARE_ATTACK";
@@ -469,6 +474,227 @@ function applyPlayCharacter(
   return { state: next, events };
 }
 
+/**
+ * PLAY_EVENT: pay cost, resolve effect, send to trash. The DSL treats
+ * an event's effect like a CHARACTER's ON_PLAY — the only difference is
+ * the card never enters the field. Stages have the same flow except
+ * the card goes to stage_area and replaces any existing stage there.
+ */
+function applyPlayEvent(
+  state: GameState,
+  action: Extract<GameAction, { type: "PLAY_EVENT" }>,
+  registry: CardRegistry,
+): ApplyResult {
+  if (state.phase !== "MAIN") throw new Error("PLAY_EVENT outside MAIN");
+  const who = state.activePlayer;
+  const p = state.players[who];
+  const found = findInHand(p, action.handInstanceId);
+  if (!found) throw new Error("event not in hand");
+  const data = registry.get(found.card.cardId);
+  if (data.cardType !== "EVENT") throw new Error("not an EVENT card");
+  if (data.cost == null) throw new Error("event has no cost");
+  if (p.donArea.active < data.cost)
+    throw new Error(`not enough active DON: need ${data.cost}`);
+
+  const newDonArea = {
+    active: p.donArea.active - data.cost,
+    rested: p.donArea.rested + data.cost,
+  };
+  let next = updatePlayer(state, who, {
+    hand: p.hand.filter((c) => c.instanceId !== action.handInstanceId),
+    trash: [...p.trash, found.card],
+    donArea: newDonArea,
+  });
+  next = updateTurnLog(next, {
+    plays: [
+      ...next.turnLog.plays,
+      { controller: who, cardId: found.card.cardId, instanceId: found.card.instanceId },
+    ],
+    donUsed: {
+      ...next.turnLog.donUsed,
+      [who]: next.turnLog.donUsed[who] + data.cost,
+    },
+  });
+  const ev = emit(next, "CARD_PLAYED", who, {
+    cardId: found.card.cardId,
+    instanceId: found.card.instanceId,
+    cost: data.cost,
+    kind: "EVENT",
+  });
+  next = ev.state;
+  const events: EngineEvent[] = [ev.event];
+  for (const eff of data.effect ?? []) {
+    if (eff.on !== "ON_PLAY") continue;
+    const evTrig = emit(next, "EFFECT_TRIGGERED", who, {
+      cardId: found.card.cardId,
+      on: "ON_PLAY",
+    });
+    next = evTrig.state;
+    events.push(evTrig.event);
+    next = enqueueTriggeredEffect(next, eff, {
+      triggerKind: "ON_PLAY",
+      sourceInstanceId: found.card.instanceId,
+      controller: who,
+    });
+  }
+  if (next.pendingEffects.length > 0) {
+    const r = processPendingEffects(next, registry);
+    next = r.state;
+    events.push(...r.events);
+  }
+  return { state: next, events };
+}
+
+function applyPlayStage(
+  state: GameState,
+  action: Extract<GameAction, { type: "PLAY_STAGE" }>,
+  registry: CardRegistry,
+): ApplyResult {
+  if (state.phase !== "MAIN") throw new Error("PLAY_STAGE outside MAIN");
+  const who = state.activePlayer;
+  const p = state.players[who];
+  const found = findInHand(p, action.handInstanceId);
+  if (!found) throw new Error("stage not in hand");
+  const data = registry.get(found.card.cardId);
+  if (data.cardType !== "STAGE") throw new Error("not a STAGE card");
+  if (data.cost == null) throw new Error("stage has no cost");
+  if (p.donArea.active < data.cost) throw new Error("not enough active DON");
+
+  const newDonArea = {
+    active: p.donArea.active - data.cost,
+    rested: p.donArea.rested + data.cost,
+  };
+  // Existing stage (if any) goes to trash.
+  const trashUpdate = p.stage
+    ? [...p.trash, { instanceId: p.stage.instanceId, cardId: p.stage.cardId }]
+    : p.trash;
+  let next = updatePlayer(state, who, {
+    hand: p.hand.filter((c) => c.instanceId !== action.handInstanceId),
+    trash: trashUpdate,
+    stage: { ...found.card, activatedThisTurn: false },
+    donArea: newDonArea,
+  });
+  next = updateTurnLog(next, {
+    plays: [
+      ...next.turnLog.plays,
+      { controller: who, cardId: found.card.cardId, instanceId: found.card.instanceId },
+    ],
+    donUsed: {
+      ...next.turnLog.donUsed,
+      [who]: next.turnLog.donUsed[who] + data.cost,
+    },
+  });
+  const ev = emit(next, "CARD_PLAYED", who, {
+    cardId: found.card.cardId,
+    instanceId: found.card.instanceId,
+    kind: "STAGE",
+    cost: data.cost,
+  });
+  next = ev.state;
+  const events: EngineEvent[] = [ev.event];
+  for (const eff of data.effect ?? []) {
+    if (eff.on !== "ON_PLAY") continue;
+    next = enqueueTriggeredEffect(next, eff, {
+      triggerKind: "ON_PLAY",
+      sourceInstanceId: found.card.instanceId,
+      controller: who,
+    });
+  }
+  if (next.pendingEffects.length > 0) {
+    const r = processPendingEffects(next, registry);
+    next = r.state;
+    events.push(...r.events);
+  }
+  return { state: next, events };
+}
+
+/**
+ * ACTIVATE_EFFECT: invoke an ACTIVATE_MAIN effect on a card the active
+ * player controls. Typically used for stages with main-phase actions or
+ * characters with activated abilities.
+ */
+function applyActivateEffect(
+  state: GameState,
+  action: Extract<GameAction, { type: "ACTIVATE_EFFECT" }>,
+  registry: CardRegistry,
+): ApplyResult {
+  if (state.phase !== "MAIN") throw new Error("ACTIVATE_EFFECT outside MAIN");
+  const who = state.activePlayer;
+  const p = state.players[who];
+  // Locate the source card on this player's side (stage, character, or leader).
+  let sourceCardId: string | null = null;
+  let sourceInstanceId: string | null = null;
+  if (p.leader.instanceId === action.instanceId) {
+    sourceCardId = p.leader.cardId;
+    sourceInstanceId = p.leader.instanceId;
+  } else if (p.stage && p.stage.instanceId === action.instanceId) {
+    sourceCardId = p.stage.cardId;
+    sourceInstanceId = p.stage.instanceId;
+  } else {
+    const ch = p.characters.find((c) => c.instanceId === action.instanceId);
+    if (ch) {
+      sourceCardId = ch.cardId;
+      sourceInstanceId = ch.instanceId;
+    }
+  }
+  if (!sourceCardId) throw new Error("ACTIVATE_EFFECT: source not on field");
+
+  const data = registry.get(sourceCardId);
+  const activate = (data.effect ?? []).find((e) => e.on === "ACTIVATE_MAIN");
+  if (!activate) throw new Error("card has no ACTIVATE_MAIN effect");
+
+  // Pay cost. Phase B-2 supports `donFromArea` and `restThis`.
+  let next = state;
+  const cost = activate.cost ?? {};
+  if (cost.donFromArea && cost.donFromArea > 0) {
+    if (p.donArea.active < cost.donFromArea) {
+      throw new Error("not enough active DON for activation");
+    }
+    next = updatePlayer(next, who, {
+      donArea: {
+        active: p.donArea.active - cost.donFromArea,
+        rested: p.donArea.rested + cost.donFromArea,
+      },
+    });
+    next = updateTurnLog(next, {
+      donUsed: {
+        ...next.turnLog.donUsed,
+        [who]: next.turnLog.donUsed[who] + cost.donFromArea,
+      },
+    });
+  }
+  if (cost.restThis) {
+    // Rest the source (leader / character).
+    const p2 = next.players[who];
+    if (p2.leader.instanceId === sourceInstanceId) {
+      if (p2.leader.state !== "active") throw new Error("source already rested");
+      next = updatePlayer(next, who, { leader: { ...p2.leader, state: "rested" } });
+    } else {
+      const ch = p2.characters.find((c) => c.instanceId === sourceInstanceId);
+      if (!ch || ch.state !== "active") throw new Error("source already rested");
+      next = updatePlayer(next, who, {
+        characters: p2.characters.map((c) =>
+          c.instanceId === sourceInstanceId ? { ...c, state: "rested" } : c,
+        ),
+      });
+    }
+  }
+  const ev = emit(next, "EFFECT_TRIGGERED", who, {
+    cardId: sourceCardId,
+    instanceId: sourceInstanceId,
+    on: "ACTIVATE_MAIN",
+  });
+  next = ev.state;
+  const events: EngineEvent[] = [ev.event];
+  next = enqueueTriggeredEffect(next, activate, {
+    triggerKind: "ACTIVATE_MAIN",
+    sourceInstanceId: sourceInstanceId!,
+    controller: who,
+  });
+  const r = processPendingEffects(next, registry);
+  return { state: r.state, events: [...events, ...r.events] };
+}
+
 function applyAttachDon(
   state: GameState,
   action: Extract<GameAction, { type: "ATTACH_DON" }>,
@@ -652,7 +878,55 @@ function applyDeclareAttack(
     targetPower,
   });
   next = ev.state;
-  return { state: next, events: [ev.event] };
+  const events: EngineEvent[] = [ev.event];
+
+  // WHEN_ATTACKING on attacker side.
+  const attackerCardId = isLeader
+    ? p.leader.cardId
+    : p.characters.find((c) => c.instanceId === action.attackerInstanceId)?.cardId;
+  if (attackerCardId) {
+    const data = registry.get(attackerCardId);
+    for (const eff of data.effect ?? []) {
+      if (eff.on !== "WHEN_ATTACKING") continue;
+      next = enqueueTriggeredEffect(next, eff, {
+        triggerKind: "WHEN_ATTACKING",
+        sourceInstanceId: action.attackerInstanceId,
+        controller: who,
+      });
+    }
+  }
+  // WHEN_ATTACKED on the target.
+  const targetRef = action.target;
+  if (targetRef.kind === "character") {
+    const tCh = opp.characters.find((c) => c.instanceId === targetRef.instanceId);
+    if (tCh) {
+      const data = registry.get(tCh.cardId);
+      for (const eff of data.effect ?? []) {
+        if (eff.on !== "WHEN_ATTACKED") continue;
+        next = enqueueTriggeredEffect(next, eff, {
+          triggerKind: "WHEN_ATTACKED",
+          sourceInstanceId: tCh.instanceId,
+          controller: oppId,
+        });
+      }
+    }
+  } else {
+    const lData = registry.get(opp.leader.cardId);
+    for (const eff of lData.effect ?? []) {
+      if (eff.on !== "WHEN_ATTACKED") continue;
+      next = enqueueTriggeredEffect(next, eff, {
+        triggerKind: "WHEN_ATTACKED",
+        sourceInstanceId: opp.leader.instanceId,
+        controller: oppId,
+      });
+    }
+  }
+  if (next.pendingEffects.length > 0) {
+    const r = processPendingEffects(next, registry);
+    next = r.state;
+    events.push(...r.events);
+  }
+  return { state: next, events };
 }
 
 function applyDeclareBlock(
@@ -756,6 +1030,21 @@ function applyPlayCounter(
     });
     next = ev.state;
     events.push(ev.event);
+    // COUNTER-triggered effects: enqueue. Common pattern: "When played as
+    // counter, draw 1 / give +X power to leader" style effects.
+    for (const eff of data.effect ?? []) {
+      if (eff.on !== "COUNTER") continue;
+      next = enqueueTriggeredEffect(next, eff, {
+        triggerKind: "COUNTER",
+        sourceInstanceId: found.card.instanceId,
+        controller: defenderId,
+      });
+    }
+    if (next.pendingEffects.length > 0) {
+      const r = processPendingEffects(next, registry);
+      next = r.state;
+      events.push(...r.events);
+    }
     // Caller can play multiple counters; resolution is triggered by PASS_PHASE.
   } else {
     // Defender passes — resolve.
@@ -813,13 +1102,11 @@ function applyLifeLoss(
   state: GameState,
   who: "A" | "B",
   events: EngineEvent[],
-  _registry: CardRegistry,
+  registry: CardRegistry,
 ): GameState {
-  void _registry;
   let next = state;
   const p = next.players[who];
   if (p.life.length === 0) {
-    // No life left → opponent wins on this hit.
     const evWin = emit(next, "GAME_END", "SYSTEM", {
       winner: opponentOf(who),
       reason: "LIFE_OUT",
@@ -834,6 +1121,10 @@ function applyLifeLoss(
     return next;
   }
   const top = p.life[0]!;
+  const topData = registry.get(top.cardId);
+  // Reveal the card before it goes to hand. If it has a TRIGGER effect
+  // in the DSL, controller may activate it. (The card itself was hidden
+  // until revealed — that's the OPTCG TRIGGER mechanic.)
   next = updatePlayer(next, who, {
     life: p.life.slice(1),
     hand: [...p.hand, top],
@@ -845,7 +1136,28 @@ function applyLifeLoss(
   });
   next = ev.state;
   events.push(ev.event);
-  // NOTE Phase B: if the life card has a TRIGGER effect, offer it here.
+  // Auto-fire TRIGGER effects (no YES_NO surfaced — most TRIGGERs are
+  // mandatory in OPTCG; the few optional ones express their optionality
+  // via internal `if` conditions in their DSL). Defender-controlled.
+  const triggerEffs = (topData.effect ?? []).filter((e) => e.on === "TRIGGER");
+  for (const eff of triggerEffs) {
+    const evT = emit(next, "TRIGGER_REVEALED", who, {
+      cardId: top.cardId,
+      instanceId: top.instanceId,
+    });
+    next = evT.state;
+    events.push(evT.event);
+    next = enqueueTriggeredEffect(next, eff, {
+      triggerKind: "TRIGGER",
+      sourceInstanceId: top.instanceId,
+      controller: who,
+    });
+  }
+  if (next.pendingEffects.length > 0) {
+    const r = processPendingEffects(next, registry);
+    next = r.state;
+    events.push(...r.events);
+  }
   return next;
 }
 
@@ -860,6 +1172,7 @@ function koCharacter(
   const p = state.players[owner];
   const ch = p.characters.find((c) => c.instanceId === instanceId);
   if (!ch) return state;
+  const data = registry.get(ch.cardId);
   // Attached DON returns to owner's DON area, rested.
   const newDonArea = {
     active: p.donArea.active,
@@ -889,8 +1202,22 @@ function koCharacter(
   });
   next = ev.state;
   events.push(ev.event);
-  // NOTE Phase B: enqueue ON_KO effects here.
-  void registry;
+  // ON_KO: fired from the perspective of the owner (controller of the
+  // KO'd card), since "this character was KO'd" effects belong to that
+  // card's owner.
+  for (const eff of data.effect ?? []) {
+    if (eff.on !== "ON_KO") continue;
+    next = enqueueTriggeredEffect(next, eff, {
+      triggerKind: "ON_KO",
+      sourceInstanceId: ch.instanceId,
+      controller: owner,
+    });
+  }
+  if (next.pendingEffects.length > 0) {
+    const r = processPendingEffects(next, registry);
+    next = r.state;
+    events.push(...r.events);
+  }
   return next;
 }
 
@@ -946,9 +1273,11 @@ export function applyAction(
     case "PLAY_CHARACTER":
       return applyPlayCharacter(state, action, registry);
     case "PLAY_EVENT":
+      return applyPlayEvent(state, action, registry);
     case "PLAY_STAGE":
-      // Phase B-2 will resolve these via the DSL interpreter.
-      throw new Error(`${action.type} not yet implemented (Phase B-2)`);
+      return applyPlayStage(state, action, registry);
+    case "ACTIVATE_EFFECT":
+      return applyActivateEffect(state, action, registry);
     case "ATTACH_DON":
       return applyAttachDon(state, action);
     case "DECLARE_ATTACK":
@@ -1011,17 +1340,37 @@ function mainPhaseActions(
   const p = state.players[who];
   const out: GameAction[] = [];
 
-  // Play characters from hand if affordable and there's room.
-  if (p.characters.length < 5) {
-    for (const card of p.hand) {
-      const d = registry.get(card.cardId);
-      if (
-        d.cardType === "CHARACTER" &&
-        d.cost != null &&
-        p.donArea.active >= d.cost
-      ) {
-        out.push({ type: "PLAY_CHARACTER", handInstanceId: card.instanceId });
-      }
+  // Play characters / events / stages from hand if affordable.
+  for (const card of p.hand) {
+    const d = registry.get(card.cardId);
+    if (d.cost == null || p.donArea.active < d.cost) continue;
+    if (d.cardType === "CHARACTER" && p.characters.length < 5) {
+      out.push({ type: "PLAY_CHARACTER", handInstanceId: card.instanceId });
+    } else if (d.cardType === "EVENT") {
+      out.push({ type: "PLAY_EVENT", handInstanceId: card.instanceId });
+    } else if (d.cardType === "STAGE") {
+      out.push({ type: "PLAY_STAGE", handInstanceId: card.instanceId });
+    }
+  }
+
+  // ACTIVATE_EFFECT: any controlled card with an ACTIVATE_MAIN effect.
+  const sources = [
+    p.leader.instanceId,
+    ...(p.stage ? [p.stage.instanceId] : []),
+    ...p.characters.map((c) => c.instanceId),
+  ];
+  for (const id of sources) {
+    const cardId =
+      id === p.leader.instanceId
+        ? p.leader.cardId
+        : id === p.stage?.instanceId
+        ? p.stage.cardId
+        : p.characters.find((c) => c.instanceId === id)?.cardId;
+    if (!cardId) continue;
+    const d = registry.get(cardId);
+    const hasActivate = (d.effect ?? []).some((e) => e.on === "ACTIVATE_MAIN");
+    if (hasActivate) {
+      out.push({ type: "ACTIVATE_EFFECT", instanceId: id });
     }
   }
 

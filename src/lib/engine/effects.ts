@@ -196,11 +196,10 @@ export function applyChoiceResolution(
   const events: EngineEvent[] = [];
 
   if (resolution.kind === "TARGET_PICK") {
-    // The current action must consume targets. We dispatch by op.
-    const r = executeWithTargets(next, top, action, resolution.picked, registry);
+    // Dispatch by current action's op.
+    const r = resumeWithTargets(next, top, action, resolution.picked, registry);
     next = r.state;
     events.push(...r.events);
-    next = advanceTopFrame(next);
   } else if (resolution.kind === "MODAL_PICK") {
     if (action.op !== "choose_one") {
       throw new Error("MODAL_PICK on a non-choose_one action");
@@ -298,18 +297,386 @@ function stepFrame(
     case "move":
       return stepFilteredTarget(state, frame, action, registry);
     case "search":
-    case "attach_don":
+      return stepSearch(state, frame, action, registry);
     case "play_from_trash":
-      // Phase B-2: not yet implemented in interpreter. Skip silently for
-      // now (advance past), but emit an event so analytics can flag it.
-      {
-        const ev = emit(state, "EFFECT_ACTION", frame.controller, {
-          unimplemented: action.op,
-        });
-        const next = advanceTopFrame(ev.state);
-        return { state: next, events: [ev.event] };
-      }
+      return stepPlayFromTrash(state, frame, action, registry);
+    case "attach_don":
+      return stepAttachDonEffect(state, frame, action, registry);
   }
+}
+
+/* ──────────────────────────────────────────────────────────────────────── */
+/* Search — reveal top N of zone, take K matching, route leftovers          */
+/* ──────────────────────────────────────────────────────────────────────── */
+
+function stepSearch(
+  state: GameState,
+  frame: ResolutionFrame,
+  action: Extract<EffectAction, { op: "search" }>,
+  registry: CardRegistry,
+): EffectResult {
+  const me = state.players[frame.controller];
+  let zone: readonly CardInstance[];
+  if (action.zone === "deck") zone = me.deck;
+  else if (action.zone === "trash") zone = me.trash;
+  else {
+    // Other zones don't make sense for search; advance silently.
+    return { state: advanceTopFrame(state), events: [] };
+  }
+
+  const looked = zone.slice(0, action.look);
+  const eligibleIdx: number[] = looked
+    .map((card, idx) => {
+      if (!action.filter) return idx;
+      const data = registry.get(card.cardId);
+      return matchesAtomLocal(
+        data,
+        action.filter,
+        frame.controller,
+        frame.controller,
+        frame.sourceInstanceId,
+      )
+        ? idx
+        : -1;
+    })
+    .filter((i) => i >= 0);
+
+  const take = Math.min(action.take, eligibleIdx.length);
+  if (take === 0) {
+    // Nothing eligible — route the looked cards to leftoverDestination.
+    return finalizeSearch(state, frame, action, looked, [], registry);
+  }
+
+  // Force-auto when eligible count exactly equals take, OR when single
+  // eligible card and take === 1.
+  if (eligibleIdx.length === take || (eligibleIdx.length === 1 && take === 1)) {
+    const picked = eligibleIdx.slice(0, take).map((i) => looked[i]!);
+    return finalizeSearch(state, frame, action, looked, picked, registry);
+  }
+
+  const options = eligibleIdx.map((i) => looked[i]!.instanceId);
+  const choice: ChoiceRequest = {
+    kind: "TARGET_PICK",
+    chooser: frame.controller,
+    options,
+    minPick: take,
+    maxPick: take,
+    prompt: `search: pick ${take} from looked cards`,
+  };
+  const ev = emit(state, "CHOICE_REQUIRED", frame.controller, {
+    op: "search",
+    options,
+    take,
+  });
+  return {
+    state: { ...ev.state, pendingChoice: choice },
+    events: [ev.event],
+  };
+}
+
+function finalizeSearch(
+  state: GameState,
+  frame: ResolutionFrame,
+  action: Extract<EffectAction, { op: "search" }>,
+  looked: readonly CardInstance[],
+  picked: readonly CardInstance[],
+  registry: CardRegistry,
+): EffectResult {
+  void registry;
+  const me = state.players[frame.controller];
+  const pickedSet = new Set(picked.map((c) => c.instanceId));
+  const leftover = looked.filter((c) => !pickedSet.has(c.instanceId));
+
+  let nextZoneAfterLook: readonly CardInstance[];
+  if (action.zone === "deck") nextZoneAfterLook = me.deck.slice(looked.length);
+  else nextZoneAfterLook = me.trash.slice(looked.length);
+
+  // Place picked cards in destination.
+  let next = state;
+  const events: EngineEvent[] = [];
+  const dest = action.destination;
+  next = placePickedInDestination(next, frame.controller, picked, dest);
+  for (const c of picked) {
+    const ev = emit(next, "EFFECT_ACTION", frame.controller, {
+      op: "search",
+      cardId: c.cardId,
+      to: dest,
+    });
+    next = ev.state;
+    events.push(ev.event);
+  }
+
+  // Place leftovers per leftoverDestination.
+  const lo = action.leftoverDestination ?? "deck_bottom";
+  if (action.zone === "deck") {
+    next = routeLeftoversFromDeck(next, frame.controller, leftover, nextZoneAfterLook, lo);
+  } else {
+    // Searching trash: leftovers stay in trash (return to top).
+    next = updatePlayer(next, frame.controller, {
+      trash: [...nextZoneAfterLook, ...leftover],
+    });
+  }
+  next = advanceTopFrame(next);
+  return { state: next, events };
+}
+
+function placePickedInDestination(
+  state: GameState,
+  who: "A" | "B",
+  picked: readonly CardInstance[],
+  dest:
+    | "hand"
+    | "deck"
+    | "trash"
+    | "character_area"
+    | "stage_area"
+    | "leader"
+    | "life"
+    | "don_deck"
+    | "don_area",
+): GameState {
+  const me = state.players[who];
+  if (picked.length === 0) return state;
+  switch (dest) {
+    case "hand":
+      return updatePlayer(state, who, { hand: [...me.hand, ...picked] });
+    case "trash":
+      return updatePlayer(state, who, { trash: [...me.trash, ...picked] });
+    case "deck":
+      // Top of deck.
+      return updatePlayer(state, who, { deck: [...picked, ...me.deck] });
+    default:
+      // character_area / stage_area / leader / life / don_* are not
+      // valid as plain "search destination" without further mechanics.
+      // Engine simply routes to hand as a safe default + logs.
+      return updatePlayer(state, who, { hand: [...me.hand, ...picked] });
+  }
+}
+
+function routeLeftoversFromDeck(
+  state: GameState,
+  who: "A" | "B",
+  leftover: readonly CardInstance[],
+  deckAfterLook: readonly CardInstance[],
+  lo: "deck_bottom" | "deck_top_shuffled" | "trash" | "deck_shuffled",
+): GameState {
+  const me = state.players[who];
+  if (lo === "trash") {
+    return updatePlayer(state, who, {
+      deck: deckAfterLook,
+      trash: [...me.trash, ...leftover],
+    });
+  }
+  if (lo === "deck_bottom") {
+    return updatePlayer(state, who, {
+      deck: [...deckAfterLook, ...leftover],
+    });
+  }
+  if (lo === "deck_shuffled") {
+    // Shuffle leftover + rest of deck deterministically.
+    const combined = [...deckAfterLook, ...leftover];
+    // The interpreter doesn't have an RNG; we synthesize one from the
+    // current event count for determinism. (In production we may pass
+    // an RNG through; for now this gives reproducible shuffles.)
+    deterministicShuffle(combined, state.eventSeq);
+    return updatePlayer(state, who, { deck: combined });
+  }
+  // deck_top_shuffled
+  const shuffleLeftover = [...leftover];
+  deterministicShuffle(shuffleLeftover, state.eventSeq);
+  return updatePlayer(state, who, {
+    deck: [...shuffleLeftover, ...deckAfterLook],
+  });
+}
+
+function deterministicShuffle<T>(arr: T[], seed: number): void {
+  // Tiny inline FNV-Mulberry to avoid creating a Rng object. Mutates in
+  // place. Same seed → same shuffle.
+  let a = (seed + 0x9e3779b9) >>> 0;
+  const next = (): number => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(next() * (i + 1));
+    const tmp = arr[i]!;
+    arr[i] = arr[j]!;
+    arr[j] = tmp;
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────────────── */
+/* play_from_trash — bring a character from trash to character_area         */
+/* ──────────────────────────────────────────────────────────────────────── */
+
+function stepPlayFromTrash(
+  state: GameState,
+  frame: ResolutionFrame,
+  action: Extract<EffectAction, { op: "play_from_trash" }>,
+  registry: CardRegistry,
+): EffectResult {
+  const me = state.players[frame.controller];
+  if (me.characters.length >= 5) {
+    // No room — advance silently.
+    return { state: advanceTopFrame(state), events: [] };
+  }
+  const eligibleIdx: number[] = me.trash
+    .map((card, idx) => {
+      const data = registry.get(card.cardId);
+      if (data.cardType !== "CHARACTER") return -1;
+      return matchesAtomLocal(
+        data,
+        action.filter,
+        frame.controller,
+        frame.controller,
+        frame.sourceInstanceId,
+      )
+        ? idx
+        : -1;
+    })
+    .filter((i) => i >= 0);
+  if (eligibleIdx.length === 0) {
+    return { state: advanceTopFrame(state), events: [] };
+  }
+  if (eligibleIdx.length === 1) {
+    return doPlayFromTrash(state, frame, me.trash[eligibleIdx[0]!]!, registry);
+  }
+  const options = eligibleIdx.map((i) => me.trash[i]!.instanceId);
+  const choice: ChoiceRequest = {
+    kind: "TARGET_PICK",
+    chooser: frame.controller,
+    options,
+    minPick: 1,
+    maxPick: 1,
+    prompt: "play from trash: choose one",
+  };
+  const ev = emit(state, "CHOICE_REQUIRED", frame.controller, {
+    op: "play_from_trash",
+    options,
+  });
+  return {
+    state: { ...ev.state, pendingChoice: choice },
+    events: [ev.event],
+  };
+}
+
+function doPlayFromTrash(
+  state: GameState,
+  frame: ResolutionFrame,
+  card: CardInstance,
+  registry: CardRegistry,
+): EffectResult {
+  const me = state.players[frame.controller];
+  const remainingTrash = me.trash.filter((c) => c.instanceId !== card.instanceId);
+  const data = registry.get(card.cardId);
+  let next = updatePlayer(state, frame.controller, {
+    trash: remainingTrash,
+    characters: [
+      ...me.characters,
+      {
+        instanceId: card.instanceId,
+        cardId: card.cardId,
+        state: "active",
+        attachedDon: 0,
+        powerModPermanent: 0,
+        powerModTurn: 0,
+        // Cards revived this way are "played this turn" — same summoning
+        // sickness rule applies unless effect grants rush separately.
+        playedThisTurn: true,
+        hasBlockerGranted: false,
+        hasRushGranted: false,
+      },
+    ],
+  });
+  const ev = emit(next, "EFFECT_ACTION", frame.controller, {
+    op: "play_from_trash",
+    cardId: card.cardId,
+    instanceId: card.instanceId,
+  });
+  next = ev.state;
+  next = advanceTopFrame(next);
+  // Note: this fires the card's ON_PLAY in real OPTCG. We enqueue here.
+  if (data.effect) {
+    for (const eff of data.effect) {
+      if (eff.on !== "ON_PLAY") continue;
+      next = enqueueTriggeredEffect(next, eff, {
+        triggerKind: "ON_PLAY",
+        sourceInstanceId: card.instanceId,
+        controller: frame.controller,
+        label: "from_trash",
+      });
+    }
+  }
+  return { state: next, events: [ev.event] };
+}
+
+/* ──────────────────────────────────────────────────────────────────────── */
+/* attach_don during effect — move N DON from area to a target              */
+/* ──────────────────────────────────────────────────────────────────────── */
+
+function stepAttachDonEffect(
+  state: GameState,
+  frame: ResolutionFrame,
+  action: Extract<EffectAction, { op: "attach_don" }>,
+  registry: CardRegistry,
+): EffectResult {
+  const me = state.players[frame.controller];
+  const matches = evaluateFilter(state, registry, action.target, {
+    controller: frame.controller,
+    selfInstanceId: frame.sourceInstanceId,
+  });
+  if (matches.length === 0) {
+    return { state: advanceTopFrame(state), events: [] };
+  }
+  const source = action.source ?? "don_area";
+  const availableDon =
+    source === "don_area" ? me.donArea.active : me.donDeck.length;
+  const count = Math.min(action.count, availableDon);
+  if (count === 0) {
+    return { state: advanceTopFrame(state), events: [] };
+  }
+  // Auto-pick the first match (typically isSelf or single match).
+  const target = matches[0]!;
+  let next = state;
+  if (source === "don_area") {
+    next = updatePlayer(next, frame.controller, {
+      donArea: {
+        active: me.donArea.active - count,
+        rested: me.donArea.rested,
+      },
+    });
+  } else {
+    next = updatePlayer(next, frame.controller, {
+      donDeck: me.donDeck.slice(count),
+    });
+  }
+  // Add to target's attachedDon.
+  const owner = target.controller;
+  const op = next.players[owner];
+  if (target.instance.instanceId === op.leader.instanceId) {
+    next = updatePlayer(next, owner, {
+      leader: { ...op.leader, attachedDon: op.leader.attachedDon + count },
+    });
+  } else {
+    next = updatePlayer(next, owner, {
+      characters: op.characters.map((c) =>
+        c.instanceId === target.instance.instanceId
+          ? { ...c, attachedDon: c.attachedDon + count }
+          : c,
+      ),
+    });
+  }
+  const ev = emit(next, "DON_ATTACH", frame.controller, {
+    count,
+    targetInstanceId: target.instance.instanceId,
+    fromEffect: true,
+  });
+  next = ev.state;
+  next = advanceTopFrame(next);
+  return { state: next, events: [ev.event] };
 }
 
 /* ──────────────────────────────────────────────────────────────────────── */
@@ -501,8 +868,8 @@ function stepFilteredTarget(
       registry,
     );
   }
-  // Auto-resolve when the filter already collapses to N candidates we need.
-  if (matches.length <= max && min <= matches.length && chooserSide === "random") {
+  // Auto-resolve when chooser is random (deterministic: take first N).
+  if (chooserSide === "random" && matches.length >= min) {
     return executeWithTargets(
       state,
       frame,
@@ -511,8 +878,10 @@ function stepFilteredTarget(
       registry,
     );
   }
-  // If unique target and minPick is met, just pick it.
-  if (matches.length === 1 && min <= 1) {
+  // If unique target and the action is mandatory (min ≥ 1), just pick it.
+  // For optional targets (min === 0) we still surface the choice so the
+  // player can pass.
+  if (matches.length === 1 && min === 1 && max === 1) {
     return executeWithTargets(
       state,
       frame,
@@ -552,6 +921,47 @@ function resolveTargetBounds(
   if (raw === "all") return { min: matchCount, max: matchCount };
   if (typeof raw === "number") return { min: raw, max: raw };
   return { min: raw.min ?? 0, max: raw.upTo };
+}
+
+/**
+ * Resume an action after a TARGET_PICK choice has been resolved. The
+ * current action might be a discard, a search, a play_from_trash, or
+ * a filtered-target op — each finalizes differently.
+ */
+function resumeWithTargets(
+  state: GameState,
+  frame: ResolutionFrame,
+  action: EffectAction,
+  pickedInstanceIds: readonly string[],
+  registry: CardRegistry,
+): EffectResult {
+  if (action.op === "discard") {
+    const fromSide = sideToPlayer(action.from, frame.controller);
+    const fromP = state.players[fromSide];
+    const set = new Set(pickedInstanceIds);
+    const picked = fromP.hand.filter((c) => set.has(c.instanceId));
+    return performDiscard(state, fromSide, picked, frame.controller);
+  }
+  if (action.op === "search") {
+    // The search step already revealed `look` cards from the top; we
+    // need to reconstruct that revealed slice to route leftovers.
+    const me = state.players[frame.controller];
+    const sourceZone = action.zone === "deck" ? me.deck : me.trash;
+    const looked = sourceZone.slice(0, action.look);
+    const set = new Set(pickedInstanceIds);
+    const picked = looked.filter((c) => set.has(c.instanceId));
+    return finalizeSearch(state, frame, action, looked, picked, registry);
+  }
+  if (action.op === "play_from_trash") {
+    const me = state.players[frame.controller];
+    const card = me.trash.find((c) => c.instanceId === pickedInstanceIds[0]);
+    if (!card) return { state: advanceTopFrame(state), events: [] };
+    return doPlayFromTrash(state, frame, card, registry);
+  }
+  // Filtered-target ops (ko / rest / power_buff / etc.) finalize via
+  // executeWithTargets.
+  const r = executeWithTargets(state, frame, action, pickedInstanceIds, registry);
+  return r;
 }
 
 function executeWithTargets(
