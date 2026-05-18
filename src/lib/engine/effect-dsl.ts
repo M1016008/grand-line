@@ -12,9 +12,10 @@
  *    DB read; there's no recompile or feature flag.
  *  - **Zod-checked at load time.** Malformed effects fail loudly the
  *    moment they're loaded, not silently mid-game.
- *  - **TS escape hatch.** Effects that can't be expressed cleanly (e.g.
- *    紫エネル "神の裁き" with conditional cascading) get a handler module
- *    instead. The DSL doesn't need to be Turing-complete to be useful.
+ *  - **TS escape hatch.** Effects that can't be expressed cleanly get a
+ *    handler module in `src/lib/engine/card-handlers/<cardId>.ts`. The
+ *    DSL doesn't need to be Turing-complete to be useful, but it does
+ *    need to be expressive enough that the escape hatch is rare.
  *
  * Coverage philosophy
  * ───────────────────
@@ -23,6 +24,18 @@
  * matching engine support + tests. Never stub a tag and "implement
  * later" — that's exactly the silent-bug failure mode that destroys
  * MCTS quality.
+ *
+ * Expressiveness added in 0.1.0
+ * ─────────────────────────────
+ *  - Filters can OR multiple atom clauses (`anyOf`).
+ *  - Filters can self-reference the effect's source card (`isSelf`).
+ *  - Filters can sort candidates and pick the extremum (`orderBy`).
+ *  - Targets can be "up to N" / "all" / fixed count.
+ *  - Actions can be wrapped in `if` for mid-sequence conditionals.
+ *  - Actions can offer the controller a `choose_one` modal selection.
+ *  - Power buffs can scale by a card count (e.g. +1000 per 黒キャラ).
+ *  - Conditions can reference what happened *this turn*
+ *    (`controllerPlayedThisTurn`, `koOccurredThisTurn`).
  */
 
 import { z } from "zod";
@@ -30,7 +43,7 @@ import { z } from "zod";
 export const DSL_VERSION = "0.1.0";
 
 /* ──────────────────────────────────────────────────────────────────────── */
-/* Filters: how a tag selects card instances on the field, in hand, etc.    */
+/* Common references                                                        */
 /* ──────────────────────────────────────────────────────────────────────── */
 
 const SideRef = z.enum(["self", "opponent", "any"]);
@@ -54,23 +67,32 @@ const CardTypeRef = z.enum([
   "DON",
 ]);
 
-/**
- * Filter expression: an AND-conjunction of optional clauses. Designed to
- * be flat — nested OR is intentionally unsupported in v0.1.0; if a card
- * needs it, use a TS handler. Keeping the DSL flat keeps reviews trivial.
- */
-const CardFilter = z
+/* ──────────────────────────────────────────────────────────────────────── */
+/* Filters — describe a set of cards in a zone.                             */
+/*                                                                          */
+/* A `CardFilter` is an atom of clauses, AND-combined, optionally combined  */
+/* with an `anyOf` array of atoms (OR-combined within itself, then AND'd    */
+/* with the surrounding atom). Example:                                     */
+/*                                                                          */
+/*   { side: "opponent", anyOf: [{ costLte: 3 }, { feature: "海軍" }] }     */
+/*   ⇒ "opponent's card with (cost ≤ 3 OR feature includes 海軍)".          */
+/*                                                                          */
+/* Nesting deeper than one level is intentionally unsupported in v0.1.0.    */
+/* If a card truly needs it, the TS handler escape hatch is the answer.     */
+/* ──────────────────────────────────────────────────────────────────────── */
+
+const CardFilterAtom = z
   .object({
     side: SideRef.optional(),
     zone: ZoneRef.optional(),
     cardType: CardTypeRef.optional(),
-    /** Match cards with this exact id (rare; usually use feature tag). */
+    /** Exact card id match (rare; usually use feature/mechanic tag). */
     cardId: z.string().optional(),
     /** Color string ("red", "black", etc.) — matches if card has the color. */
     color: z.string().optional(),
     /** Feature tag like "麦わらの一味". */
     feature: z.string().optional(),
-    /** Trait tag like "ブロッカー". */
+    /** Mechanic / keyword tag like "ブロッカー". */
     mechanic: z.string().optional(),
     /** Cost comparison. */
     costLte: z.number().int().optional(),
@@ -79,17 +101,82 @@ const CardFilter = z
     /** Power comparison (only meaningful for cards with power). */
     powerLte: z.number().int().optional(),
     powerGte: z.number().int().optional(),
+    /**
+     * When true, the filter matches only the card whose effect is
+     * resolving. Engine substitutes the effect's source instance at
+     * resolution time. Useful for "give this character +2000" style.
+     */
+    isSelf: z.boolean().optional(),
   })
   .strict();
+
+export type CardFilterAtom = z.infer<typeof CardFilterAtom>;
+
+const CardFilter = CardFilterAtom.extend({
+  /** OR-combined atoms; AND'd with the surrounding flat clauses. */
+  anyOf: z.array(CardFilterAtom).min(1).optional(),
+  /**
+   * Tie-break / sort policy when more candidates exist than `count`
+   * targets are needed. Defaults to engine-controller's free choice.
+   */
+  orderBy: z
+    .enum([
+      "highest_cost",
+      "lowest_cost",
+      "highest_power",
+      "lowest_power",
+    ])
+    .optional(),
+}).strict();
 
 export type CardFilter = z.infer<typeof CardFilter>;
 
 /* ──────────────────────────────────────────────────────────────────────── */
-/* Atomic effect actions. Order-of-evaluation in a sequence matters and is */
-/* preserved exactly — engine resolves left-to-right.                       */
+/* Target count: fixed N | "up to N" | "all".                               */
 /* ──────────────────────────────────────────────────────────────────────── */
 
-/** Who picks the target / discard / etc.? Defaults to the effect's controller. */
+const TargetCount = z.union([
+  z.number().int().positive(),
+  z
+    .object({
+      upTo: z.number().int().positive(),
+      min: z.number().int().nonnegative().optional(),
+    })
+    .strict(),
+  z.literal("all"),
+]);
+
+export type TargetCount = z.infer<typeof TargetCount>;
+
+/* ──────────────────────────────────────────────────────────────────────── */
+/* Scaling values — "X per matching card in zone Z".                        */
+/*                                                                          */
+/* Used by PowerBuff (and only PowerBuff for now) so a single effect can    */
+/* express "+1000 per 黒キャラ" without exploding into a `for_each` shape.  */
+/* Add to other actions as the need arises.                                 */
+/* ──────────────────────────────────────────────────────────────────────── */
+
+const ScaledInt = z
+  .object({
+    base: z.number().int(),
+    perCardMatching: CardFilterAtom,
+    in: ZoneRef,
+    side: SideRef.optional(),
+    /** Multiplier applied to the matched count. Defaults to 1. */
+    multiplier: z.number().int().optional(),
+    /** Upper bound on the contribution from scaling (the base is unaffected). */
+    cap: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+const IntOrScaled = z.union([z.number().int(), ScaledInt]);
+
+export type IntOrScaled = z.infer<typeof IntOrScaled>;
+
+/* ──────────────────────────────────────────────────────────────────────── */
+/* Atomic effect actions — non-recursive subset.                            */
+/* ──────────────────────────────────────────────────────────────────────── */
+
 const Chooser = z.enum(["controller", "opponent", "random"]);
 
 const DrawAction = z
@@ -135,8 +222,7 @@ const KoAction = z
     op: z.literal("ko"),
     target: CardFilter,
     chooser: Chooser.optional(),
-    /** Number of distinct targets, defaults to 1. */
-    count: z.number().int().positive().optional(),
+    count: TargetCount.optional(),
   })
   .strict();
 
@@ -144,12 +230,11 @@ const PowerBuffAction = z
   .object({
     op: z.literal("power_buff"),
     target: CardFilter,
-    /** Positive or negative integer (e.g. +1000, -2000). */
-    delta: z.number().int(),
+    /** Magnitude (positive or negative). May be a scaled value. */
+    delta: IntOrScaled,
     /** "turn" = wears off in End phase. "permanent" = stays. */
     duration: z.enum(["turn", "permanent"]),
-    /** Number of distinct targets. */
-    count: z.number().int().positive().optional(),
+    count: TargetCount.optional(),
     chooser: Chooser.optional(),
   })
   .strict();
@@ -160,7 +245,7 @@ const CostModAction = z
     target: CardFilter,
     delta: z.number().int(),
     duration: z.enum(["turn", "permanent"]),
-    count: z.number().int().positive().optional(),
+    count: TargetCount.optional(),
     chooser: Chooser.optional(),
   })
   .strict();
@@ -169,7 +254,7 @@ const RestAction = z
   .object({
     op: z.literal("rest"),
     target: CardFilter,
-    count: z.number().int().positive().optional(),
+    count: TargetCount.optional(),
     chooser: Chooser.optional(),
   })
   .strict();
@@ -178,7 +263,7 @@ const ActivateAction = z
   .object({
     op: z.literal("activate"),
     target: CardFilter,
-    count: z.number().int().positive().optional(),
+    count: TargetCount.optional(),
     chooser: Chooser.optional(),
   })
   .strict();
@@ -188,7 +273,7 @@ const MoveAction = z
     op: z.literal("move"),
     source: CardFilter,
     destination: ZoneRef,
-    count: z.number().int().positive().optional(),
+    count: TargetCount.optional(),
     chooser: Chooser.optional(),
   })
   .strict();
@@ -227,7 +312,7 @@ const GiveKeywordAction = z
     target: CardFilter,
     keyword: z.enum(["blocker", "rush", "double_attack", "banish"]),
     duration: z.enum(["turn", "permanent"]),
-    count: z.number().int().positive().optional(),
+    count: TargetCount.optional(),
     chooser: Chooser.optional(),
   })
   .strict();
@@ -241,8 +326,132 @@ const RevealAction = z
   })
   .strict();
 
-/** Discriminated union of all atomic actions. */
-export const EffectAction = z.discriminatedUnion("op", [
+/* ──────────────────────────────────────────────────────────────────────── */
+/* Conditional / structural actions — recursive subset.                     */
+/* ──────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Conditions evaluated mid-sequence at action resolution time.
+ * Superset of `TriggerCondition`: adds turn-history checks that only
+ * make sense once the engine starts executing actions.
+ */
+const ActionCondition = z
+  .object({
+    /** ≥N DON in controller's don_area at this moment. */
+    minDonInArea: z.number().int().nonnegative().optional(),
+    /** Controller's life count is in [min, max]. */
+    lifeBetween: z
+      .tuple([z.number().int().nonnegative(), z.number().int().nonnegative()])
+      .optional(),
+    /** ≥N cards matching `filter` exist in controller's trash. */
+    trashCount: z
+      .object({
+        filter: CardFilterAtom,
+        gte: z.number().int().nonnegative(),
+      })
+      .strict()
+      .optional(),
+    /** Controller has played ≥N cards matching `filter` this turn. */
+    controllerPlayedThisTurn: z
+      .object({
+        filter: CardFilterAtom,
+        gte: z.number().int().positive(),
+      })
+      .strict()
+      .optional(),
+    /** Controller has KO'd ≥N opposing cards matching `filter` this turn. */
+    koOccurredThisTurn: z
+      .object({
+        filter: CardFilterAtom,
+        gte: z.number().int().positive(),
+        side: SideRef.optional(),
+      })
+      .strict()
+      .optional(),
+    /** Controller's leader has attacked this turn. */
+    leaderAttackedThisTurn: z.boolean().optional(),
+    /** Free-text label for handler-side gating (avoid unless necessary). */
+    custom: z.string().optional(),
+  })
+  .strict();
+
+export type ActionCondition = z.infer<typeof ActionCondition>;
+
+/* The discriminated union is non-recursive. The three recursive actions
+ * (if / choose_one / for_each) declare their own .then/.actions fields
+ * with `z.lazy` so we can fold them in. */
+
+const IfAction: z.ZodType<{
+  op: "if";
+  condition: ActionCondition;
+  then: EffectAction[];
+  else?: EffectAction[];
+}> = z.lazy(() =>
+  z
+    .object({
+      op: z.literal("if"),
+      condition: ActionCondition,
+      then: z.array(EffectAction).min(1),
+      else: z.array(EffectAction).min(1).optional(),
+    })
+    .strict(),
+);
+
+const ChooseOneAction: z.ZodType<{
+  op: "choose_one";
+  chooser?: "controller" | "opponent" | "random";
+  modes: Array<{ id: string; label?: string; actions: EffectAction[] }>;
+}> = z.lazy(() =>
+  z
+    .object({
+      op: z.literal("choose_one"),
+      chooser: Chooser.optional(),
+      modes: z
+        .array(
+          z
+            .object({
+              id: z.string().min(1),
+              label: z.string().optional(),
+              actions: z.array(EffectAction).min(1),
+            })
+            .strict(),
+        )
+        .min(2),
+    })
+    .strict(),
+);
+
+/**
+ * Repeat `actions` once per card matching `filter` in `zone`. Inner
+ * actions do *not* see the per-iteration card; if you need that, use
+ * a multi-target action (`count: "all"`) instead.
+ */
+const ForEachAction: z.ZodType<{
+  op: "for_each";
+  filter: CardFilterAtom;
+  zone: z.infer<typeof ZoneRef>;
+  side?: z.infer<typeof SideRef>;
+  actions: EffectAction[];
+  /** Cap on iterations (defensive against unbounded scaling). */
+  cap?: number;
+}> = z.lazy(() =>
+  z
+    .object({
+      op: z.literal("for_each"),
+      filter: CardFilterAtom,
+      zone: ZoneRef,
+      side: SideRef.optional(),
+      actions: z.array(EffectAction).min(1),
+      cap: z.number().int().positive().optional(),
+    })
+    .strict(),
+);
+
+/* ──────────────────────────────────────────────────────────────────────── */
+/* The full EffectAction union.                                             */
+/* ──────────────────────────────────────────────────────────────────────── */
+
+const NonRecursiveAction = z.discriminatedUnion("op", [
   DrawAction,
   DiscardAction,
   SearchAction,
@@ -259,10 +468,36 @@ export const EffectAction = z.discriminatedUnion("op", [
   RevealAction,
 ]);
 
-export type EffectAction = z.infer<typeof EffectAction>;
+export type NonRecursiveAction = z.infer<typeof NonRecursiveAction>;
+
+export type EffectAction =
+  | NonRecursiveAction
+  | {
+      op: "if";
+      condition: ActionCondition;
+      then: EffectAction[];
+      else?: EffectAction[];
+    }
+  | {
+      op: "choose_one";
+      chooser?: "controller" | "opponent" | "random";
+      modes: Array<{ id: string; label?: string; actions: EffectAction[] }>;
+    }
+  | {
+      op: "for_each";
+      filter: CardFilterAtom;
+      zone: z.infer<typeof ZoneRef>;
+      side?: z.infer<typeof SideRef>;
+      actions: EffectAction[];
+      cap?: number;
+    };
+
+export const EffectAction: z.ZodType<EffectAction> = z.lazy(() =>
+  z.union([NonRecursiveAction, IfAction, ChooseOneAction, ForEachAction]),
+);
 
 /* ──────────────────────────────────────────────────────────────────────── */
-/* Triggers (when the effect fires) + the wrapper schema for a whole card. */
+/* Triggers (when the effect fires) + the wrapper schema for a whole card.  */
 /* ──────────────────────────────────────────────────────────────────────── */
 
 export const TriggerEvent = z.enum([
@@ -282,31 +517,13 @@ export const TriggerEvent = z.enum([
   "ACTIVATE_MAIN",
 ]);
 
-/** A condition that must be true at trigger time for the effect to fire. */
-const TriggerCondition = z
-  .object({
-    /** Only fires when ≥N DON in don_area at trigger time. */
-    minDonInArea: z.number().int().nonnegative().optional(),
-    /** Only fires when controller's life is in [min, max]. */
-    lifeBetween: z
-      .tuple([z.number().int().nonnegative(), z.number().int().nonnegative()])
-      .optional(),
-    /** Only fires when N cards of given filter exist in trash. */
-    trashCount: z
-      .object({
-        filter: CardFilter,
-        gte: z.number().int().nonnegative(),
-      })
-      .optional(),
-    /** Generic feature flag for handler-side gating (rare). */
-    custom: z.string().optional(),
-  })
-  .strict();
+/** Trigger-time condition (a subset of `ActionCondition` semantics). */
+const TriggerCondition = ActionCondition;
 
 const TriggeredEffect = z
   .object({
     on: TriggerEvent,
-    /** Optional cost paid by the controller to use the effect (DON, etc.). */
+    /** Optional cost paid by the controller to use the effect. */
     cost: z
       .object({
         attachedDonRequired: z.number().int().nonnegative().optional(),

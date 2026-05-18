@@ -16,6 +16,10 @@
  * - **Hash-friendly.** `hashState` (Phase A-2) walks this structure in a
  *   canonical order; downstream MCTS uses the result as a transposition
  *   table key.
+ * - **Turn-scoped memory in `turnLog`.** Many OPTCG cards condition on
+ *   what happened *this turn* ("if you played a 黒 card this turn",
+ *   "if your leader has attacked this turn"). `turnLog` captures those
+ *   events as they happen and is wiped at the start of each turn.
  *
  * Zone layout (OPTCG official):
  *
@@ -29,6 +33,8 @@
  *   ├─ Hand
  *   └─ Trash
  */
+
+import type { TriggeredEffect } from "./effect-dsl";
 
 /** A single instance of a card in play. Multiple copies → multiple instances. */
 export interface CardInstance {
@@ -107,8 +113,8 @@ export type Phase =
 export interface PendingEffect {
   readonly source: "ON_PLAY" | "ON_KO" | "WHEN_ATTACKING" | "WHEN_ATTACKED" | "TRIGGER" | "COUNTER";
   readonly sourceInstanceId: string;
-  /** The Effect DSL JSON payload to apply (see effect-dsl.ts). */
-  readonly effect: unknown;
+  /** The triggered effect payload — typed against the Effect DSL. */
+  readonly effect: TriggeredEffect;
   readonly controller: "A" | "B";
 }
 
@@ -127,6 +133,53 @@ export interface ActiveAttack {
   readonly blocker: { readonly controller: "A" | "B"; readonly instanceId: string } | null;
 }
 
+/**
+ * Per-turn event memory. Reset to empty at TURN_START.
+ *
+ * Many OPTCG cards condition on "this turn"-scoped facts:
+ *   - "If you played a 黒 card this turn, ..." → `plays`
+ *   - "If your leader attacked this turn, ..." → `leaderAttacked`
+ *   - "For each DON used this turn, ..." → `donUsed`
+ *   - "If you KO'd an opponent character this turn, ..." → `kos`
+ *
+ * Keep this as flat data; complex queries are evaluated in rules.ts.
+ */
+export interface TurnLog {
+  readonly plays: ReadonlyArray<{
+    readonly controller: "A" | "B";
+    readonly cardId: string;
+    readonly instanceId: string;
+  }>;
+  readonly kos: ReadonlyArray<{
+    /** Owner of the KO'd card (i.e. whose character was KO'd). */
+    readonly owner: "A" | "B";
+    /** Who caused the KO. */
+    readonly byController: "A" | "B";
+    readonly cardId: string;
+    readonly instanceId: string;
+  }>;
+  readonly attacks: ReadonlyArray<{
+    readonly attackerController: "A" | "B";
+    readonly attackerInstanceId: string;
+    readonly targetKind: "leader" | "character";
+  }>;
+  /** DON cards spent (attached or paid as cost) by each player this turn. */
+  readonly donUsed: { readonly A: number; readonly B: number };
+  /** Attack count this turn per player. */
+  readonly attackCount: { readonly A: number; readonly B: number };
+  /** Set true once that player's leader has declared at least one attack. */
+  readonly leaderAttacked: { readonly A: boolean; readonly B: boolean };
+}
+
+export const EMPTY_TURN_LOG: TurnLog = {
+  plays: [],
+  kos: [],
+  attacks: [],
+  donUsed: { A: 0, B: 0 },
+  attackCount: { A: 0, B: 0 },
+  leaderAttacked: { A: false, B: false },
+};
+
 /** The complete observable game state. */
 export interface GameState {
   /** Engine semver — bumped on breaking changes to this schema. */
@@ -144,6 +197,8 @@ export interface GameState {
   readonly pendingEffects: readonly PendingEffect[];
   /** The current attack, if BATTLE phase mid-resolution. */
   readonly activeAttack: ActiveAttack | null;
+  /** Memory of events that happened during the current turn (reset on TURN_START). */
+  readonly turnLog: TurnLog;
   /** Set when the game has ended; reason for end. */
   readonly winner: "A" | "B" | "DRAW" | null;
   readonly endCondition:

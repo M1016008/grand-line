@@ -11,7 +11,7 @@
  * surface area stays small.
  */
 
-export const ENGINE_VERSION = "0.1.0-alpha";
+export const ENGINE_VERSION = "0.1.1-alpha";
 
 export * from "./state";
 export * from "./effect-dsl";
