@@ -182,6 +182,53 @@ CREATE TABLE deck_game_plans (
 -- §5.4 Meta decks (input for opponent analysis)
 -- ─────────────────────────────────────────────────────────────────────────
 
+-- Practice replay logs
+
+CREATE TABLE practice_runs (
+  id                 TEXT PRIMARY KEY,
+  mode               TEXT NOT NULL,
+  cpu_skill          TEXT NOT NULL,
+  rules_version      TEXT NOT NULL,
+  player_leader_id   TEXT NOT NULL,
+  opponent_leader_id TEXT NOT NULL,
+  game_count         INTEGER NOT NULL,
+  summary_metrics    TEXT,
+  created_at         INTEGER DEFAULT (unixepoch()) NOT NULL
+);
+CREATE INDEX idx_practice_runs_created ON practice_runs(created_at);
+CREATE INDEX idx_practice_runs_matchup ON practice_runs(player_leader_id, opponent_leader_id, cpu_skill);
+
+CREATE TABLE practice_games (
+  id                     TEXT PRIMARY KEY,
+  run_id                 TEXT NOT NULL REFERENCES practice_runs(id) ON DELETE CASCADE,
+  seed                   INTEGER NOT NULL,
+  first_player           TEXT NOT NULL,
+  winner                 TEXT NOT NULL,
+  reason                 TEXT NOT NULL,
+  turns                  INTEGER NOT NULL,
+  player_life            INTEGER NOT NULL,
+  opponent_life          INTEGER NOT NULL,
+  player_deck_snapshot   TEXT NOT NULL,
+  opponent_deck_snapshot TEXT NOT NULL,
+  summary_metrics        TEXT NOT NULL
+);
+CREATE INDEX idx_practice_games_run          ON practice_games(run_id);
+CREATE INDEX idx_practice_games_winner       ON practice_games(winner);
+CREATE INDEX idx_practice_games_first_player ON practice_games(first_player);
+
+CREATE TABLE practice_events (
+  game_id     TEXT NOT NULL REFERENCES practice_games(id) ON DELETE CASCADE,
+  event_index INTEGER NOT NULL,
+  type        TEXT NOT NULL,
+  turn        INTEGER NOT NULL,
+  side        TEXT,
+  payload     TEXT NOT NULL,
+  state       TEXT NOT NULL,
+  PRIMARY KEY (game_id, event_index)
+);
+CREATE INDEX idx_practice_events_type      ON practice_events(type);
+CREATE INDEX idx_practice_events_game_turn ON practice_events(game_id, turn);
+
 CREATE TABLE meta_decks (
   id                 TEXT PRIMARY KEY,
   leader_card_id     TEXT NOT NULL REFERENCES cards(id) ON DELETE RESTRICT,

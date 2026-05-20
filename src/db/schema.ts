@@ -530,6 +530,90 @@ export const deckGamePlans = sqliteTable("deck_game_plans", {
     .default(sql`(unixepoch())`),
 });
 
+/* Practice replay logs                                                     */
+
+export const practiceRuns = sqliteTable(
+  "practice_runs",
+  {
+    id: text().primaryKey(),
+    mode: text({ enum: ["match", "batch"] }).notNull(),
+    cpuSkill: text({ enum: ["beginner", "advanced"] }).notNull(),
+    rulesVersion: text().notNull(),
+    playerLeaderId: text().notNull(),
+    opponentLeaderId: text().notNull(),
+    gameCount: integer().notNull(),
+    summaryMetrics: text({ mode: "json" }).$type<Record<string, unknown> | null>(),
+    createdAt: integer({ mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+  (t) => [
+    index("idx_practice_runs_created").on(t.createdAt),
+    index("idx_practice_runs_matchup").on(
+      t.playerLeaderId,
+      t.opponentLeaderId,
+      t.cpuSkill,
+    ),
+  ],
+);
+
+export const practiceGames = sqliteTable(
+  "practice_games",
+  {
+    id: text().primaryKey(),
+    runId: text()
+      .notNull()
+      .references(() => practiceRuns.id, { onDelete: "cascade" }),
+    seed: integer().notNull(),
+    firstPlayer: text({ enum: ["player", "opponent"] }).notNull(),
+    winner: text({ enum: ["player", "opponent"] }).notNull(),
+    reason: text({
+      enum: ["leader_damage", "deck_out", "effect_win", "score_at_limit"],
+    }).notNull(),
+    turns: integer().notNull(),
+    playerLife: integer().notNull(),
+    opponentLife: integer().notNull(),
+    playerDeckSnapshot: text({ mode: "json" })
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    opponentDeckSnapshot: text({ mode: "json" })
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    summaryMetrics: text({ mode: "json" })
+      .$type<Record<string, unknown>>()
+      .notNull(),
+  },
+  (t) => [
+    index("idx_practice_games_run").on(t.runId),
+    index("idx_practice_games_winner").on(t.winner),
+    index("idx_practice_games_first_player").on(t.firstPlayer),
+  ],
+);
+
+export const practiceEvents = sqliteTable(
+  "practice_events",
+  {
+    gameId: text()
+      .notNull()
+      .references(() => practiceGames.id, { onDelete: "cascade" }),
+    eventIndex: integer().notNull(),
+    type: text().notNull(),
+    turn: integer().notNull(),
+    side: text({ enum: ["player", "opponent"] }),
+    payload: text({ mode: "json" })
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    state: text({ mode: "json" })
+      .$type<Record<string, unknown>>()
+      .notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.gameId, t.eventIndex] }),
+    index("idx_practice_events_type").on(t.type),
+    index("idx_practice_events_game_turn").on(t.gameId, t.turn),
+  ],
+);
+
 /* ──────────────────────────────────────────────────────────────────────── */
 /* §5.4 Meta decks (opponent analysis input)                                */
 /* ──────────────────────────────────────────────────────────────────────── */
