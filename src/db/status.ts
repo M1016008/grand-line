@@ -17,6 +17,9 @@ import {
   cardSets,
   cardTranslations,
   cards,
+  practiceEvents,
+  practiceGames,
+  practiceRuns,
   scrapeTargets,
 } from "@/db/schema";
 
@@ -85,6 +88,21 @@ async function main() {
     safeCount("scrape_targets", async () =>
       Number(
         (await db.select({ n: sql<number>`COUNT(*)` }).from(scrapeTargets))[0]?.n ?? 0,
+      ),
+    ),
+    safeCount("practice_runs", async () =>
+      Number(
+        (await db.select({ n: sql<number>`COUNT(*)` }).from(practiceRuns))[0]?.n ?? 0,
+      ),
+    ),
+    safeCount("practice_games", async () =>
+      Number(
+        (await db.select({ n: sql<number>`COUNT(*)` }).from(practiceGames))[0]?.n ?? 0,
+      ),
+    ),
+    safeCount("practice_events", async () =>
+      Number(
+        (await db.select({ n: sql<number>`COUNT(*)` }).from(practiceEvents))[0]?.n ?? 0,
       ),
     ),
   ]);

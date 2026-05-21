@@ -8,7 +8,7 @@ discover workflows; the CI workflow itself does not need any secrets.
 
 | Secret | Used by | Source |
 | --- | --- | --- |
-| `TURSO_DATABASE_URL` | `scrape-regulations.yml`, `discover-new-sets.yml` | `turso db show onepiece-tcg --url` |
+| `TURSO_DATABASE_URL` | scrape / maintenance workflows | `turso db show onepiece-tcg --url` |
 | `TURSO_AUTH_TOKEN`   | same | `turso group tokens create default` |
 
 ## Optional (not currently used, reserved for future workflows)
@@ -36,4 +36,6 @@ database or move it between organizations.
 | --- | --- | --- |
 | `ci.yml` | — | every push to `main`, every PR |
 | `scrape-regulations.yml` | weekly (Mon 00:00 UTC) | + manual via "Run workflow" |
-| `discover-new-sets.yml` | — | manual only (fires once per new pack) |
+| `discover-new-sets.yml` | weekly (Tue 00:00 UTC) | + manual via "Run workflow" |
+| `scrape-bandai-cards.yml` | monthly (1st 00:00 UTC) | + manual via "Run workflow" |
+| `db-maintenance.yml` | weekly (Sun 00:00 UTC) | + manual via "Run workflow" |

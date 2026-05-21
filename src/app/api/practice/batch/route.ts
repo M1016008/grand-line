@@ -10,12 +10,16 @@ import {
 } from "@/lib/practice-sim";
 import type { CardListItem } from "@/lib/cards";
 import type { GameEvent, GameReplayLog } from "@/lib/practice-log";
+import {
+  resolvePracticeStoragePolicy,
+  selectPracticeEventGameIndexes,
+  type PracticeRequestedEventStorageMode,
+} from "@/lib/practice-storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const MAX_BATCH_GAMES = 10_000;
-const DEFAULT_EVENT_SAMPLE_LIMIT = 100;
 
 const cardSchema = z.object({
   id: z.string(),
@@ -123,7 +127,7 @@ async function saveBatchRun({
   replays: GameReplayLog[];
   playerLeaderId: string;
   opponentLeaderId: string;
-  eventStorageMode: "auto" | "full" | "sampled" | "summary_only";
+  eventStorageMode: PracticeRequestedEventStorageMode;
   eventSampleLimit?: number;
 }) {
   const firstReplay = replays[0];
@@ -132,12 +136,12 @@ async function saveBatchRun({
   }
 
   const runId = crypto.randomUUID();
-  const storagePolicy = resolveStoragePolicy(
+  const storagePolicy = resolvePracticeStoragePolicy(
     replays.length,
     eventStorageMode,
     eventSampleLimit,
   );
-  const storedEventGameIndexes = selectEventGameIndexes(
+  const storedEventGameIndexes = selectPracticeEventGameIndexes(
     replays.length,
     storagePolicy.eventSampleLimit,
     storagePolicy.mode,
@@ -208,55 +212,6 @@ async function saveBatchRun({
     storedEventGames: storedEventGameIndexes.size,
     skippedEventGames: replays.length - storedEventGameIndexes.size,
   };
-}
-
-function resolveStoragePolicy(
-  games: number,
-  requestedMode: "auto" | "full" | "sampled" | "summary_only",
-  requestedLimit: number | undefined,
-) {
-  const mode =
-    requestedMode === "auto"
-      ? games <= 100
-        ? "full"
-        : "sampled"
-      : requestedMode;
-  const eventSampleLimit =
-    mode === "full"
-      ? games
-      : mode === "summary_only"
-        ? 0
-        : Math.min(
-            games,
-            Math.max(0, requestedLimit ?? DEFAULT_EVENT_SAMPLE_LIMIT),
-          );
-
-  return { mode, eventSampleLimit };
-}
-
-function selectEventGameIndexes(
-  games: number,
-  limit: number,
-  mode: "full" | "sampled" | "summary_only",
-): Set<number> {
-  if (mode === "summary_only" || limit <= 0) return new Set();
-  if (mode === "full" || limit >= games) {
-    return new Set(Array.from({ length: games }, (_, index) => index));
-  }
-
-  const target = Math.min(limit, games);
-  const indexes = new Set<number>([0]);
-  if (target === 1) return indexes;
-
-  indexes.add(games - 1);
-  const middleSlots = target - indexes.size;
-  for (let i = 1; i <= middleSlots; i++) {
-    indexes.add(Math.round((i * (games - 1)) / (middleSlots + 1)));
-  }
-  for (let index = 0; indexes.size < target && index < games; index++) {
-    indexes.add(index);
-  }
-  return indexes;
 }
 
 function summarizeReplay(replay: GameReplayLog): Record<string, unknown> {

@@ -1,0 +1,91 @@
+# Scheduled Turso database maintenance.
+#
+# Practice replay events are intentionally the only aggressively pruned data:
+# card facts, scrape history, and regulation history remain durable, while old
+# full replay event streams are reduced to compact game summaries.
+#
+# Schedule: Sundays at 00:00 UTC = 09:00 JST.
+#
+# Required repo secrets:
+#   TURSO_DATABASE_URL
+#   TURSO_AUTH_TOKEN
+#
+# Manual run: Actions → "DB maintenance" → "Run workflow".
+
+name: DB maintenance
+
+on:
+  schedule:
+    - cron: "0 0 * * 0"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print rows that would be deleted without deleting"
+        type: boolean
+        default: false
+      event_days:
+        description: "Delete full practice event streams older than this many days"
+        type: number
+        default: 14
+      run_days:
+        description: "Delete whole practice runs older than this many days"
+        type: number
+        default: 90
+      keep_runs:
+        description: "Always keep at least this many recent practice runs"
+        type: number
+        default: 50
+      vacuum:
+        description: "Run VACUUM after pruning to compact free pages"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-maintenance
+  cancel-in-progress: false
+
+jobs:
+  maintain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+      DRY_RUN: ${{ inputs.dry_run || false }}
+      EVENT_DAYS: ${{ inputs.event_days || 14 }}
+      RUN_DAYS: ${{ inputs.run_days || 90 }}
+      KEEP_RUNS: ${{ inputs.keep_runs || 50 }}
+      VACUUM: ${{ inputs.vacuum || false }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Verify required secrets
+        run: |
+          if [ -z "${TURSO_DATABASE_URL:-}" ] || [ -z "${TURSO_AUTH_TOKEN:-}" ]; then
+            echo "::error::TURSO_DATABASE_URL and TURSO_AUTH_TOKEN must be set as repo secrets"
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - name: Prune practice storage
+        run: |
+          args=(--event-days "$EVENT_DAYS" --run-days "$RUN_DAYS" --keep-runs "$KEEP_RUNS")
+
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+
+          if [ "$VACUUM" = "true" ]; then
+            args+=(--vacuum)
+          fi
+
+          npm run db:prune:practice -- "${args[@]}"

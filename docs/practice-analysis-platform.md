@@ -52,6 +52,15 @@ Persistence is intentionally split by weight:
 - `practice_events`: full replay event streams. Small runs are stored fully; in
   automatic mode, runs over 100 games store a representative event sample and
   keep the remaining games as summaries only.
+- Storage guardrails:
+  - `auto` mode stores full event streams only for small runs
+    (`PRACTICE_AUTO_FULL_EVENT_GAME_LIMIT`, default 20 games).
+  - Larger runs store summaries for every game, plus sampled full event streams
+    (`PRACTICE_DEFAULT_EVENT_SAMPLE_LIMIT`, default 25 games).
+  - Even explicit full storage is capped by `PRACTICE_MAX_STORED_EVENT_GAMES`
+    (default 100 games) to protect Turso capacity.
+  - `npm run db:prune:practice` removes old event streams while keeping compact
+    game summaries.
 
 練習ログは3層で保存する。
 

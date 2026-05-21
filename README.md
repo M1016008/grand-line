@@ -122,6 +122,27 @@ Vercel プロジェクト設定 (Settings → Environment Variables) に
 Turso に接続します。`@libsql/client` は HTTPS 経由で動作するので
 serverless 関数からも使えます。
 
+### 定期スクレイピング
+
+カード DB の更新は GitHub Actions で Turso に直接反映します。
+
+| Workflow | 役割 | スケジュール |
+| --- | --- | --- |
+| `discover-new-sets.yml` | 公式カードリストの収録 dropdown を確認し、新セットだけ登録・スクレイプ | 毎週火曜 09:00 JST |
+| `scrape-bandai-cards.yml` | 既知の全セットを再スクレイプし、既存カードの修正・画像・再録 membership を更新 | 毎月1日 09:00 JST |
+| `scrape-regulations.yml` | 禁止・制限カードを更新 | 毎週月曜 09:00 JST |
+| `db-maintenance.yml` | 古い練習リプレイイベントを削除し、必要に応じて DB を compact | 毎週日曜 09:00 JST |
+
+Actions secrets に `TURSO_DATABASE_URL` と `TURSO_AUTH_TOKEN` を入れておくと、
+本番サイトが参照する Turso DB が定期的に更新されます。手動更新したい場合は
+GitHub Actions の "Run workflow" から `scrape-bandai-cards.yml` を実行します。
+
+練習ログは容量が増えやすいため、通常は全試合の要約だけを残し、完全な
+event stream は少数サンプルだけ保存します。保存上限は環境変数
+`PRACTICE_AUTO_FULL_EVENT_GAME_LIMIT`、`PRACTICE_DEFAULT_EVENT_SAMPLE_LIMIT`、
+`PRACTICE_MAX_STORED_EVENT_GAMES` で調整できます。古い event stream の削除は
+`npm run db:prune:practice -- --dry-run` で事前確認できます。
+
 ### Anthropic API キー (Phase 3.5b / 4 / 4.5 で必要)
 
 AI シナジー解析・デッキ提案・シナリオ生成は Claude API を呼びます。
