@@ -57,7 +57,12 @@ async function main() {
     );
   }
   const setFixtures = readdirSync(FIXTURE_DIR)
-    .filter((f) => f.endsWith(".html") && !f.startsWith("regulations"))
+    .filter(
+      (f) =>
+        f.endsWith(".html") &&
+        !f.startsWith("regulations") &&
+        f !== "cardlist-root.html",
+    )
     .map((f) => f.replace(/\.html$/, ""))
     .sort();
   if (setFixtures.length === 0) {

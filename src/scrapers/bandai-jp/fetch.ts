@@ -182,12 +182,12 @@ export async function fetchSetHtml(setCode: string): Promise<RawSetFixture> {
     });
     const page = await context.newPage();
 
-    await page.goto(url, { waitUntil: "networkidle", timeout: 60_000 });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 });
 
     // The cardlist hydrates `<dl class="modalCol">` for each card after JS
     // runs. Waiting on `.modalCol` directly is more reliable than guessing
     // at the wrapper class (which has changed between site refreshes).
-    await page.waitForSelector("dl.modalCol", { timeout: 30_000 }).catch(() => {
+    await page.waitForSelector("dl.modalCol", { state: "attached", timeout: 30_000 }).catch(() => {
       console.warn(
         "⚠ Expected dl.modalCol nodes not found — saving the HTML anyway so you can inspect it.",
       );

@@ -1,0 +1,95 @@
+# Scheduled refresh of Bandai JP card data.
+#
+# The weekly discover workflow handles newly announced sets quickly. This
+# monthly refresh re-scrapes every known set at a polite delay so existing
+# card text, images, and reprint memberships stay aligned with Bandai's
+# live cardlist if they make corrections after release.
+#
+# Schedule: 1st day of every month at 00:00 UTC = 09:00 JST.
+#
+# Required repo secrets:
+#   TURSO_DATABASE_URL
+#   TURSO_AUTH_TOKEN
+#
+# Manual run: Actions → "Scrape Bandai cards" → "Run workflow".
+
+name: Scrape Bandai cards
+
+on:
+  schedule:
+    - cron: "0 0 1 * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "What to run"
+        type: choice
+        default: "discover-and-full-refresh"
+        options:
+          - "discover-and-full-refresh"
+          - "discover-only"
+          - "full-refresh-only"
+      set_codes:
+        description: "Optional comma-separated set codes for the full refresh step, e.g. OP15,PRB02"
+        type: string
+        required: false
+        default: ""
+      dry_run:
+        description: "Parse only during the full refresh step; don't write cards to DB"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scrape-bandai-cards
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+      RUN_MODE: ${{ inputs.mode || 'discover-and-full-refresh' }}
+      SET_CODES: ${{ inputs.set_codes || '' }}
+      DRY_RUN: ${{ inputs.dry_run || false }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Verify required secrets
+        run: |
+          if [ -z "${TURSO_DATABASE_URL:-}" ] || [ -z "${TURSO_AUTH_TOKEN:-}" ]; then
+            echo "::error::TURSO_DATABASE_URL and TURSO_AUTH_TOKEN must be set as repo secrets"
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium --with-deps
+
+      - name: Discover new sets
+        if: env.RUN_MODE != 'full-refresh-only'
+        run: npm run scrape:discover
+
+      - name: Refresh known card sets
+        if: env.RUN_MODE != 'discover-only'
+        run: |
+          args=(--delay-ms 8000)
+
+          if [ -n "${SET_CODES:-}" ]; then
+            args+=(--only "$SET_CODES")
+          fi
+
+          if [ "${DRY_RUN}" = "true" ]; then
+            args+=(--dry-run)
+          fi
+
+          npm run scrape:bandai-jp:all -- "${args[@]}"

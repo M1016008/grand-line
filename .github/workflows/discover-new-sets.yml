@@ -1,8 +1,9 @@
-# On-demand discovery of new Bandai sets.
+# Scheduled discovery of new Bandai sets.
 #
-# Bandai adds a new pack roughly every 3-4 months, so a daily/weekly
-# cron would mostly burn cycles. This workflow is manual-trigger only —
-# fire it when you hear about a new pack release.
+# Bandai adds a new pack roughly every 3-4 months. A weekly one-page
+# dropdown check is cheap enough to run automatically, and newly found
+# sets are scraped immediately so the card DB catches up without a
+# manual second step.
 #
 # Behaviour: re-fetches the cardlist root, parses the dropdown, finds
 # any seriesId not already in SERIES_PARAM ∪ scrape_targets, persists
@@ -13,11 +14,14 @@
 #   TURSO_DATABASE_URL
 #   TURSO_AUTH_TOKEN
 #
+# Schedule: Tuesdays at 00:00 UTC = 09:00 JST.
 # Manual run: Actions → "Discover new sets" → "Run workflow".
 
 name: Discover new sets
 
 on:
+  schedule:
+    - cron: "0 0 * * 2"
   workflow_dispatch:
     inputs:
       dry_run:

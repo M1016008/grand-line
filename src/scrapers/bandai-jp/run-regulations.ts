@@ -53,7 +53,7 @@ async function fetchLive(): Promise<string> {
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     });
     const page = await ctx.newPage();
-    await page.goto(URL, { waitUntil: "networkidle", timeout: 60_000 });
+    await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
     await page.waitForTimeout(1500);
     const html = await page.content();
     await mkdir(path.dirname(FIXTURE_PATH), { recursive: true });
@@ -77,6 +77,7 @@ async function main() {
   const html = args.fromFixture ? await loadFixture() : await fetchLive();
   const parsed = parseRestrictionsHtml(html);
   const today = todayIso();
+  const fetchedAt = new Date();
 
   console.log(
     `▶ Parsed bans=${parsed.bans.length} restricted=${parsed.restricted.length} pairs=${parsed.pairs.length}`,
@@ -106,6 +107,15 @@ async function main() {
   for (const [cardId, maxCopies] of desiredSingles) {
     const prior = activeSingles.find((r) => r.cardId === cardId);
     if (prior && prior.maxCopies === maxCopies) {
+      await db
+        .update(cardRestrictions)
+        .set({ sourceUrl: URL, fetchedAt })
+        .where(
+          and(
+            eq(cardRestrictions.cardId, cardId),
+            eq(cardRestrictions.effectiveFrom, prior.effectiveFrom),
+          ),
+        );
       unchanged += 1;
       continue;
     }
@@ -128,7 +138,7 @@ async function main() {
       maxCopies,
       reason: null,
       sourceUrl: URL,
-      fetchedAt: new Date(),
+      fetchedAt,
     });
     added += 1;
   }
@@ -169,6 +179,16 @@ async function main() {
       (a) => a.cardIdA === p.cardIdA && a.cardIdB === p.cardIdB,
     );
     if (prior) {
+      await db
+        .update(cardRestrictionPairs)
+        .set({ sourceUrl: URL, fetchedAt })
+        .where(
+          and(
+            eq(cardRestrictionPairs.cardIdA, p.cardIdA),
+            eq(cardRestrictionPairs.cardIdB, p.cardIdB),
+            eq(cardRestrictionPairs.effectiveFrom, prior.effectiveFrom),
+          ),
+        );
       pairsUnchanged += 1;
       continue;
     }
@@ -178,7 +198,7 @@ async function main() {
       effectiveFrom: today,
       effectiveUntil: null,
       sourceUrl: URL,
-      fetchedAt: new Date(),
+      fetchedAt,
     });
     pairsAdded += 1;
     void key;

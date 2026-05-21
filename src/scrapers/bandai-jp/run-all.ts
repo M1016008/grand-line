@@ -20,6 +20,9 @@
  */
 import "@/lib/load-env";
 
+import { db } from "@/db";
+import { scrapeTargets } from "@/db/schema";
+
 import { ALL_SET_CODES, fetchSetHtml, loadFixture } from "./fetch";
 import { parseSetHtml } from "./parse";
 import { upsertScrapedCards } from "./upsert";
@@ -55,10 +58,21 @@ async function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+async function loadTargetSetCodes(): Promise<string[]> {
+  const discovered = await db
+    .select({ setCode: scrapeTargets.setCode })
+    .from(scrapeTargets)
+    .catch(() => []);
+  return Array.from(
+    new Set([...ALL_SET_CODES, ...discovered.map((r) => r.setCode)]),
+  );
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  const targets = (args.only ?? ALL_SET_CODES).filter(
+  const knownSetCodes = args.only ?? (await loadTargetSetCodes());
+  const targets = knownSetCodes.filter(
     (code) => !args.skip.has(code),
   );
 
