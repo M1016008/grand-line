@@ -1,24 +1,19 @@
-# Weekly refresh of Bandai's banned/restricted card list.
+# Manual smoke test for Bandai's banned/restricted card list.
 #
 # The reconciliation logic in `run-regulations.ts` is idempotent: it
 # carries forward unchanged rows, opens new ones with effective_from =
 # today, and closes removed ones with effective_until = today. So this
 # job is safe to run repeatedly.
 #
-# Schedule: Mondays at 00:00 UTC = 09:00 JST. Picks up overnight
-# changes Bandai typically pushes early in the week.
+# Production refreshes now run on the local workstation so the attached SSD
+# database is updated directly. GitHub Actions cannot access that disk, so this
+# workflow writes only to an ephemeral local DB when run manually.
 #
-# Required repo secrets:
-#   TURSO_DATABASE_URL  — libsql://onepiece-tcg-<org>.turso.io
-#   TURSO_AUTH_TOKEN    — group token from `turso group tokens create default`
-#
-# Manual run: Actions → "Scrape regulations" → "Run workflow".
+# Manual run: Actions -> "Scrape regulations" -> "Run workflow".
 
 name: Scrape regulations
 
 on:
-  schedule:
-    - cron: "0 0 * * 1"
   workflow_dispatch: {}
 
 permissions:
@@ -33,8 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+      GRAND_LINE_DATABASE_MODE: local
+      LOCAL_DB_PATH: ./data/grand-line-ci.db
     steps:
       - uses: actions/checkout@v4
 
@@ -43,17 +38,13 @@ jobs:
           node-version: "22"
           cache: "npm"
 
-      - name: Verify required secrets
-        run: |
-          if [ -z "${TURSO_DATABASE_URL:-}" ] || [ -z "${TURSO_AUTH_TOKEN:-}" ]; then
-            echo "::error::TURSO_DATABASE_URL and TURSO_AUTH_TOKEN must be set as repo secrets"
-            exit 1
-          fi
-
       - run: npm ci
 
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
+
+      - name: Prepare local DB
+        run: npm run db:migrate
 
       - name: Scrape and reconcile
         run: npm run scrape:regulations

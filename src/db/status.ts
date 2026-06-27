@@ -10,6 +10,7 @@ import "@/lib/load-env";
 import { sql } from "drizzle-orm";
 
 import { db } from "@/db";
+import { resolveDatabaseConfig } from "@/db/config";
 import {
   cardRestrictionPairs,
   cardRestrictions,
@@ -38,10 +39,8 @@ async function safeCount(label: string, fn: () => Promise<number>): Promise<Row>
 }
 
 async function main() {
-  const url = process.env.TURSO_DATABASE_URL;
-  const local = process.env.LOCAL_DB_PATH ?? "./data/grand-line.db";
-  const target = url ? `Turso · ${url}` : `local file · ${local}`;
-  console.log(`▶ Connected to: ${target}`);
+  const config = resolveDatabaseConfig();
+  console.log(`▶ Connected to: ${config.label}`);
   console.log("");
 
   const counts = await Promise.all([

@@ -213,14 +213,6 @@ async function listFromDb(filters: CardListFilters): Promise<CardListResult> {
     // the user-facing string type satisfies Drizzle's narrow signature.
     conditions.push(eq(cards.cardType, filters.cardType as "LEADER"));
   }
-  if (filters.setCode) {
-    // Filter via the membership join — this captures reprints
-    // (e.g. PRB02 includes the card even though its canonical set_code
-    // points to the original OP01 print).
-    conditions.push(
-      sql`EXISTS (SELECT 1 FROM card_set_membership m WHERE m.card_id = ${cards.id} AND m.set_code = ${filters.setCode})`,
-    );
-  }
   if (typeof filters.cost === "number") conditions.push(eq(cards.cost, filters.cost));
 
   // colors / features / mechanics are JSON arrays stored as TEXT. Until the
@@ -244,6 +236,25 @@ async function listFromDb(filters: CardListFilters): Promise<CardListResult> {
   }
 
   const where = conditions.length > 0 ? and(...conditions) : undefined;
+  const listColumns = {
+    id: cards.id,
+    setCode: cards.setCode,
+    cardType: cards.cardType,
+    colors: cards.colors,
+    attributes: cards.attributes,
+    features: cards.features,
+    mechanics: cards.mechanics,
+    cost: cards.cost,
+    power: cards.power,
+    counter: cards.counter,
+    life: cards.life,
+    rarity: cards.rarity,
+    hasTrigger: cards.hasTrigger,
+    imageUrlJp: cards.imageUrlJp,
+    name: cardTranslations.name,
+    source: cardTranslations.source,
+    verified: cardTranslations.verified,
+  };
 
   // Count of all cards in the DB regardless of filter — for the header.
   const totalAllRow = await db
@@ -262,47 +273,77 @@ async function listFromDb(filters: CardListFilters): Promise<CardListResult> {
     };
   }
 
-  // Filtered count.
-  const totalRow = await db
-    .select({ n: sql<number>`COUNT(*)` })
-    .from(cards)
-    .leftJoin(
-      cardTranslations,
-      sql`${cardTranslations.cardId} = ${cards.id} AND ${cardTranslations.language} = ${language}`,
-    )
-    .where(where ?? sql`1=1`);
-  const total = Number(totalRow[0]?.n ?? 0);
+  let total: number;
+  let rows: Array<{
+    id: string;
+    setCode: string;
+    cardType: string;
+    colors: string[];
+    attributes: string[];
+    features: string[];
+    mechanics: string[];
+    cost: number | null;
+    power: number | null;
+    counter: number | null;
+    life: number | null;
+    rarity: string | null;
+    hasTrigger: boolean;
+    imageUrlJp: string | null;
+    name: string | null;
+    source: CardTranslationSource | null;
+    verified: boolean | null;
+  }>;
 
-  // Page slice.
-  const rows = await db
-    .select({
-      id: cards.id,
-      setCode: cards.setCode,
-      cardType: cards.cardType,
-      colors: cards.colors,
-      attributes: cards.attributes,
-      features: cards.features,
-      mechanics: cards.mechanics,
-      cost: cards.cost,
-      power: cards.power,
-      counter: cards.counter,
-      life: cards.life,
-      rarity: cards.rarity,
-      hasTrigger: cards.hasTrigger,
-      imageUrlJp: cards.imageUrlJp,
-      name: cardTranslations.name,
-      source: cardTranslations.source,
-      verified: cardTranslations.verified,
-    })
-    .from(cards)
-    .leftJoin(
-      cardTranslations,
-      sql`${cardTranslations.cardId} = ${cards.id} AND ${cardTranslations.language} = ${language}`,
-    )
-    .where(where ?? sql`1=1`)
-    .orderBy(asc(cards.setCode), asc(cards.id))
-    .limit(pageSize)
-    .offset(offset);
+  if (filters.setCode) {
+    // Read from the set membership index first. This captures reprints without
+    // scanning every card, which matters as daily scraping adds more sets.
+    const setWhere = and(eq(cardSetMembership.setCode, filters.setCode), where ?? sql`1=1`);
+    const totalRow = await db
+      .select({ n: sql<number>`COUNT(*)` })
+      .from(cardSetMembership)
+      .innerJoin(cards, eq(cardSetMembership.cardId, cards.id))
+      .leftJoin(
+        cardTranslations,
+        sql`${cardTranslations.cardId} = ${cards.id} AND ${cardTranslations.language} = ${language}`,
+      )
+      .where(setWhere);
+    total = Number(totalRow[0]?.n ?? 0);
+
+    rows = await db
+      .select(listColumns)
+      .from(cardSetMembership)
+      .innerJoin(cards, eq(cardSetMembership.cardId, cards.id))
+      .leftJoin(
+        cardTranslations,
+        sql`${cardTranslations.cardId} = ${cards.id} AND ${cardTranslations.language} = ${language}`,
+      )
+      .where(setWhere)
+      .orderBy(asc(cardSetMembership.cardId))
+      .limit(pageSize)
+      .offset(offset);
+  } else {
+    const totalRow = await db
+      .select({ n: sql<number>`COUNT(*)` })
+      .from(cards)
+      .leftJoin(
+        cardTranslations,
+        sql`${cardTranslations.cardId} = ${cards.id} AND ${cardTranslations.language} = ${language}`,
+      )
+      .where(where ?? sql`1=1`);
+    total = Number(totalRow[0]?.n ?? 0);
+
+    rows = await db
+      .select(listColumns)
+      .from(cards)
+      .leftJoin(
+        cardTranslations,
+        sql`${cardTranslations.cardId} = ${cards.id} AND ${cardTranslations.language} = ${language}`,
+      )
+      .where(where ?? sql`1=1`)
+      .orderBy(asc(cards.setCode), asc(cards.id))
+      .limit(pageSize)
+      .offset(offset);
+  }
 
   return {
     cards: rows.map<CardListItem>((r) => ({

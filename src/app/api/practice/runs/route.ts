@@ -4,7 +4,12 @@ import { z } from "zod";
 
 import { db } from "@/db";
 import { practiceEvents, practiceGames, practiceRuns } from "@/db/schema";
-import type { GameEvent, GameReplayLog } from "@/lib/practice-log";
+import {
+  normalizeCpuSkill,
+  type CpuSkill,
+  type GameEvent,
+  type GameReplayLog,
+} from "@/lib/practice-log";
 import {
   resolvePracticeStoragePolicy,
   selectPracticeEventGameIndexes,
@@ -14,7 +19,17 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const practiceSideSchema = z.enum(["player", "opponent"]);
-const cpuSkillSchema = z.enum(["beginner", "advanced"]);
+const cpuSkillSchema = z.string().transform((value, ctx): CpuSkill => {
+  const normalized = normalizeCpuSkill(value);
+  if (!normalized) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Invalid CPU level",
+    });
+    return "level1";
+  }
+  return normalized;
+});
 const winReasonSchema = z.enum([
   "leader_damage",
   "deck_out",

@@ -87,7 +87,10 @@ export const cards = sqliteTable(
   },
   (t) => [
     index("idx_cards_set").on(t.setCode),
+    index("idx_cards_set_id").on(t.setCode, t.id),
     index("idx_cards_type").on(t.cardType),
+    index("idx_cards_type_set_id").on(t.cardType, t.setCode, t.id),
+    index("idx_cards_cost_set_id").on(t.cost, t.setCode, t.id),
     /* Hallucination-related rule constraints. */
     check(
       "ck_leader_has_life",
@@ -197,6 +200,8 @@ export const cardRestrictionPairs = sqliteTable(
   (t) => [
     primaryKey({ columns: [t.cardIdA, t.cardIdB, t.effectiveFrom] }),
     index("idx_restriction_pairs_b").on(t.cardIdB),
+    index("idx_restriction_pairs_a_active").on(t.cardIdA, t.effectiveUntil),
+    index("idx_restriction_pairs_b_active").on(t.cardIdB, t.effectiveUntil),
     check("ck_restriction_pair_ordered", sql`${t.cardIdA} < ${t.cardIdB}`),
   ],
 );
@@ -229,6 +234,7 @@ export const cardSetMembership = sqliteTable(
   (t) => [
     primaryKey({ columns: [t.cardId, t.setCode] }),
     index("idx_card_set_membership_set").on(t.setCode),
+    index("idx_card_set_membership_set_card").on(t.setCode, t.cardId),
   ],
 );
 
@@ -285,6 +291,7 @@ export const cardTranslations = sqliteTable(
     primaryKey({ columns: [t.cardId, t.language] }),
     index("idx_translations_lang").on(t.language),
     index("idx_translations_source").on(t.source),
+    index("idx_translations_fetched_at").on(t.fetchedAt),
   ],
 );
 
@@ -395,6 +402,8 @@ export const cardSynergies = sqliteTable(
       columns: [t.fromCardId, t.toCardId, t.relationType],
     }),
     index("idx_synergy_to").on(t.toCardId),
+    index("idx_synergy_ai_from_relation").on(t.detectedBy, t.fromCardId, t.relationType),
+    index("idx_synergy_ai_to_relation").on(t.detectedBy, t.toCardId, t.relationType),
     check(
       "ck_synergy_strength_range",
       sql`${t.strength} >= 0 AND ${t.strength} <= 10`,
@@ -537,7 +546,9 @@ export const practiceRuns = sqliteTable(
   {
     id: text().primaryKey(),
     mode: text({ enum: ["match", "batch"] }).notNull(),
-    cpuSkill: text({ enum: ["beginner", "advanced"] }).notNull(),
+    cpuSkill: text({
+      enum: ["level1", "level2", "level3", "level4", "level5"],
+    }).notNull(),
     rulesVersion: text().notNull(),
     playerLeaderId: text().notNull(),
     opponentLeaderId: text().notNull(),

@@ -1,22 +1,18 @@
-# Scheduled Turso database maintenance.
+# Manual local database maintenance smoke test.
 #
 # Practice replay events are intentionally the only aggressively pruned data:
 # card facts, scrape history, and regulation history remain durable, while old
 # full replay event streams are reduced to compact game summaries.
 #
-# Schedule: Sundays at 00:00 UTC = 09:00 JST.
+# Production maintenance now runs on the local workstation against the attached
+# SSD database. GitHub Actions cannot access that disk, so this workflow writes
+# only to an ephemeral local DB when run manually.
 #
-# Required repo secrets:
-#   TURSO_DATABASE_URL
-#   TURSO_AUTH_TOKEN
-#
-# Manual run: Actions → "DB maintenance" → "Run workflow".
+# Manual run: Actions -> "DB maintenance" -> "Run workflow".
 
 name: DB maintenance
 
 on:
-  schedule:
-    - cron: "0 0 * * 0"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -52,8 +48,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+      GRAND_LINE_DATABASE_MODE: local
+      LOCAL_DB_PATH: ./data/grand-line-ci.db
       DRY_RUN: ${{ inputs.dry_run || false }}
       EVENT_DAYS: ${{ inputs.event_days || 14 }}
       RUN_DAYS: ${{ inputs.run_days || 90 }}
@@ -67,14 +63,10 @@ jobs:
           node-version: "22"
           cache: "npm"
 
-      - name: Verify required secrets
-        run: |
-          if [ -z "${TURSO_DATABASE_URL:-}" ] || [ -z "${TURSO_AUTH_TOKEN:-}" ]; then
-            echo "::error::TURSO_DATABASE_URL and TURSO_AUTH_TOKEN must be set as repo secrets"
-            exit 1
-          fi
-
       - run: npm ci
+
+      - name: Prepare local DB
+        run: npm run db:migrate
 
       - name: Prune practice storage
         run: |

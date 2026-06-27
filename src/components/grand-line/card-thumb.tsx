@@ -31,7 +31,8 @@ export function CardThumb({ card, restrictionMaxCopies }: CardThumbProps) {
               <img
                 src={proxiedCardImage(card.imageUrlJp)!}
                 alt={card.name}
-                loading="lazy"
+                loading="eager"
+                decoding="async"
                 className="h-full w-full object-cover"
               />
             ) : (

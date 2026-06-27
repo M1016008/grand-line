@@ -1,19 +1,19 @@
-import "dotenv/config";
+import "./src/lib/load-env";
+
 import { defineConfig } from "drizzle-kit";
 
-const tursoUrl = process.env.TURSO_DATABASE_URL;
-const tursoToken = process.env.TURSO_AUTH_TOKEN;
-const localPath = process.env.LOCAL_DB_PATH ?? "./data/grand-line.db";
+import { resolveDatabaseConfig } from "./src/db/config";
 
-const useTurso = Boolean(tursoUrl && tursoToken);
+const dbConfig = resolveDatabaseConfig();
 
 export default defineConfig({
   schema: "./src/db/schema.ts",
   out: "./drizzle/migrations",
   dialect: "turso",
-  dbCredentials: useTurso
-    ? { url: tursoUrl!, authToken: tursoToken! }
-    : { url: `file:${localPath}` },
+  dbCredentials:
+    dbConfig.kind === "turso" && dbConfig.authToken
+      ? { url: dbConfig.url, authToken: dbConfig.authToken }
+      : { url: dbConfig.url },
   verbose: true,
   strict: true,
   casing: "snake_case",

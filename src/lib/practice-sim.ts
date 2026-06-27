@@ -12,6 +12,7 @@ import {
   type PracticeSide,
   type ReplayStateSnapshot,
   type WinReason,
+  cpuSkillRank,
 } from "@/lib/practice-log";
 import { exactTurnProbabilities } from "@/lib/probability";
 import type { CardListItem } from "@/lib/cards";
@@ -204,10 +205,10 @@ export function simulateMatch(
   opts: MatchOptions,
 ): MatchResult {
   const maxTurns = opts.maxTurns ?? 10;
-  const cpuSkill = opts.cpuSkill ?? "beginner";
+  const cpuSkill = opts.cpuSkill ?? "level1";
   const rng = mulberry32(opts.seed);
   const firstPlayer = opts.firstPlayer ?? (opts.seed % 2 === 0 ? "player" : "opponent");
-  const player = createMatchState("player", playerDeck, rng, firstPlayer, "advanced");
+  const player = createMatchState("player", playerDeck, rng, firstPlayer, "level4");
   const opponent = createMatchState("opponent", opponentDeck, rng, firstPlayer, cpuSkill);
   const recorder = createRecorder(opts.seed, cpuSkill, firstPlayer, playerDeck, opponentDeck);
   const log: string[] = [];
@@ -272,7 +273,7 @@ export function simulateBatch(
   opponentDeck: PracticeDeck,
   games: number,
   seed: number,
-  cpuSkill: CpuSkill = "beginner",
+  cpuSkill: CpuSkill = "level1",
 ): BatchResult {
   let playerWins = 0;
   let opponentWins = 0;
@@ -595,8 +596,17 @@ function choosePlay(active: MatchState, defending: MatchState, cpuSkill: CpuSkil
         matchCardScore(a, active, defending, active.donAvailable, cpuSkill),
     );
   if (playable.length === 0) return null;
-  if (cpuSkill === "beginner" && active.side === "opponent") {
-    return playable.find((card) => card.cost !== null) ?? playable[0];
+  if (active.side === "opponent") {
+    const rank = cpuSkillRank(cpuSkill);
+    if (rank === 1) {
+      return playable[playable.length - 1];
+    }
+    if (rank === 2) {
+      return (
+        playable.find((card) => (card.cost ?? 99) <= Math.max(1, active.donAvailable - 1)) ??
+        playable[0]
+      );
+    }
   }
   return playable[0];
 }
@@ -656,8 +666,19 @@ function matchCardScore(
     ).length * 3.5;
   const defenseNeed = active.life <= 2 && (card.counter ?? 0) >= 2000 ? 8 : 0;
   const closeout = defending.life <= 2 && card.mechanics.includes("Rush") ? 10 : 0;
-  const skill = active.side === "opponent" && cpuSkill === "advanced" ? 4 : 0;
-  return round1(curve + power + mechanics + defenseNeed + closeout + skill + active.evaluation.composite / 25);
+  const rank = active.side === "opponent" ? cpuSkillRank(cpuSkill) : 4;
+  const skill = active.side === "opponent" ? (rank - 3) * 2 : 0;
+  const highLevelCloseout = active.side === "opponent" && rank >= 4 && defending.life <= 2 ? 4 : 0;
+  return round1(
+    curve +
+      power +
+      mechanics +
+      defenseNeed +
+      closeout +
+      skill +
+      highLevelCloseout +
+      active.evaluation.composite / 25,
+  );
 }
 
 function finishMatch(
@@ -1024,13 +1045,16 @@ function snapshot(player: MatchState, opponent: MatchState): ReplayStateSnapshot
 function shouldMulligan(hand: CardListItem[], deck: PracticeDeck, skill: CpuSkill): boolean {
   const lowCost = hand.filter((card) => (card.cost ?? 99) <= 2).length;
   const sameFeature = hand.some((card) => card.features.some((f) => deck.leader.features.includes(f)));
-  if (skill === "advanced") return lowCost === 0 || (!sameFeature && lowCost < 2);
-  return lowCost === 0;
+  const rank = cpuSkillRank(skill);
+  if (rank >= 5) return lowCost === 0 || (!sameFeature && lowCost < 2);
+  if (rank >= 4) return lowCost === 0 || (!sameFeature && lowCost < 2);
+  if (rank >= 2) return lowCost === 0 || (!sameFeature && lowCost < 1);
+  return lowCost === 0 && !sameFeature;
 }
 
 function skillAttackBonus(skill: CpuSkill, side: PracticeSide): number {
   if (side !== "opponent") return 0;
-  return skill === "advanced" ? 0.45 : -0.25;
+  return [-0.45, -0.15, 0.15, 0.45, 0.75][cpuSkillRank(skill) - 1] ?? 0;
 }
 
 function addContribution(

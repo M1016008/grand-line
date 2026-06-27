@@ -28,6 +28,8 @@ import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
+import { resolveDatabaseConfig } from "@/db/config";
+
 const FIXTURE_DIR = path.resolve("data/raw/bandai-jp");
 
 function run(cmd: string, args: string[]): void {
@@ -42,9 +44,8 @@ function run(cmd: string, args: string[]): void {
 }
 
 async function main() {
-  const url = process.env.TURSO_DATABASE_URL;
-  const local = process.env.LOCAL_DB_PATH ?? "./data/grand-line.db";
-  console.log(`▶ Bootstrap target: ${url ? `Turso (${url})` : `local (${local})`}`);
+  const config = resolveDatabaseConfig();
+  console.log(`▶ Bootstrap target: ${config.label}`);
   console.log("");
 
   // 1. Migrations

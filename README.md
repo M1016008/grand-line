@@ -14,11 +14,11 @@
 | 状態管理 | Zustand |
 | グラフ可視化 | D3.js (d3-force) + React-Flow |
 | チャート | Recharts |
-| DB | Turso (libSQL/SQLite 互換) |
+| DB | SSD 上のローカル libSQL/SQLite (`LOCAL_DB_PATH`) |
 | ORM | Drizzle ORM |
 | AI | Anthropic Claude API (Opus 4.7 / Sonnet 4.6 / Haiku 4.5 を用途別) |
 | スクレイピング | Playwright |
-| 定期実行 | GitHub Actions (cron) |
+| 定期実行 | ローカルジョブ / Codex automation (`scrape:daily`) |
 | ホスティング | Vercel |
 
 ## 開発フェーズ
@@ -40,7 +40,7 @@
 ### 前提
 
 - Node.js 20.9+ / npm 11+
-- Turso CLI (`brew install tursodatabase/tap/turso`)
+- SSD 上のローカル DB パス (`LOCAL_DB_PATH`)
 - (任意) Playwright 用の Chromium: `npx playwright install chromium`
 
 ### セットアップ
@@ -48,10 +48,13 @@
 ```bash
 npm install
 cp .env.example .env.local
-# .env.local に Turso / Anthropic のクレデンシャルを記入
+# .env.local にローカル DB と Anthropic の設定を記入
+#
+# GRAND_LINE_DATABASE_MODE="local"
+# LOCAL_DB_PATH="/Volumes/OWC Express 1M2 80G/grand-line-data/grand-line.db"
 
-# Drizzle migration を Turso に流す
-npm run db:push
+# DB 接続先と件数を確認
+npm run db:status
 
 # 開発サーバ
 npm run dev
@@ -59,83 +62,36 @@ npm run dev
 
 http://localhost:3000
 
-### ローカル SQLite から Turso へ移行
+### DB 接続先
 
-開発中はローカル SQLite (`./data/grand-line.db`) で動かし、本番は Turso
-(エッジレプリケーション) に切り替えます。コードは両方サポート — `.env.local`
-の `TURSO_DATABASE_URL` が空ならローカル、設定されていれば Turso です。
+標準運用は、接続中の SSD に置いたローカル libSQL/SQLite ファイルです。
+`.env.local` で `GRAND_LINE_DATABASE_MODE="local"` を指定すると、
+`TURSO_DATABASE_URL` が残っていてもアプリ・スクレイパー・メンテナンスは
+`LOCAL_DB_PATH` のファイルだけを読み書きします。
 
-#### 手順
+```bash
+GRAND_LINE_DATABASE_MODE="local"
+LOCAL_DB_PATH="/Volumes/OWC Express 1M2 80G/grand-line-data/grand-line.db"
+```
 
-1. **Turso CLI と DB**
-
-   ```bash
-   brew install tursodatabase/tap/turso
-   turso auth signup     # 初回のみ
-   turso auth login
-
-   turso db create onepiece-tcg --location nrt   # nrt = 東京リージョン
-   turso db tokens create onepiece-tcg            # 認証トークン (一度きり表示)
-   turso db show onepiece-tcg --url               # libsql://... の URL
-   ```
-
-2. **`.env.local` を更新**
-
-   ```bash
-   TURSO_DATABASE_URL="libsql://onepiece-tcg-<your-org>.turso.io"
-   TURSO_AUTH_TOKEN="<上で発行したトークン>"
-   ```
-
-3. **接続先を確認**
-
-   ```bash
-   npm run db:status
-   # → ▶ Connected to: Turso · libsql://onepiece-tcg-...
-   #    全テーブル 0 件 + 「DB is empty」表示が出れば OK
-   ```
-
-4. **マイグレーション + シード一括**
-
-   ```bash
-   npm run db:bootstrap
-   # → 4 マイグレーション適用 → fixtures から 54 セット投入 → 規制取り込み
-   # 所要 3〜5 分 (Turso のラウンドトリップ分かかる)
-   ```
-
-5. **検証**
-
-   ```bash
-   npm run db:status
-   # cards 2,533 / sets 55 / restrictions 5 / pairs 3 になっていれば成功
-   npm run dev
-   # /cards, /regulations, /sets を開いて Turso 経由でデータが見える
-   ```
-
-ローカルへ戻したいときは `.env.local` の `TURSO_DATABASE_URL` を空にして
-dev サーバを再起動すれば `data/grand-line.db` を読みます。データはどちらに
-も残ります。
-
-#### Vercel デプロイ
-
-Vercel プロジェクト設定 (Settings → Environment Variables) に
-`TURSO_DATABASE_URL` と `TURSO_AUTH_TOKEN` を追加するだけで本番でも
-Turso に接続します。`@libsql/client` は HTTPS 経由で動作するので
-serverless 関数からも使えます。
+任意で Turso を使う場合だけ、`GRAND_LINE_DATABASE_MODE="turso"` と
+`TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` を設定します。
 
 ### 定期スクレイピング
 
-カード DB の更新は GitHub Actions で Turso に直接反映します。
+カード DB の更新はローカルジョブで SSD の DB に直接反映します。
+GitHub Actions は接続中の SSD にアクセスできないため、手動実行時の
+スクレイパー確認用だけに残しています。
 
-| Workflow | 役割 | スケジュール |
+| コマンド | 役割 | スケジュール |
 | --- | --- | --- |
-| `discover-new-sets.yml` | 公式カードリストの収録 dropdown を確認し、新セットだけ登録・スクレイプ | 毎週火曜 09:00 JST |
-| `scrape-bandai-cards.yml` | 既知の全セットを再スクレイプし、既存カードの修正・画像・再録 membership を更新 | 毎月1日 09:00 JST |
-| `scrape-regulations.yml` | 禁止・制限カードを更新 | 毎週月曜 09:00 JST |
-| `db-maintenance.yml` | 古い練習リプレイイベントを削除し、必要に応じて DB を compact | 毎週日曜 09:00 JST |
+| `npm run scrape:daily` | 新セット検出、全セット再スクレイプ、禁止/制限更新、DB compact、最終件数確認 | 毎日 03:00 JST |
 
-Actions secrets に `TURSO_DATABASE_URL` と `TURSO_AUTH_TOKEN` を入れておくと、
-本番サイトが参照する Turso DB が定期的に更新されます。手動更新したい場合は
-GitHub Actions の "Run workflow" から `scrape-bandai-cards.yml` を実行します。
+手動更新したい場合は、ローカルで次を実行します。
+
+```bash
+npm run scrape:daily
+```
 
 練習ログは容量が増えやすいため、通常は全試合の要約だけを残し、完全な
 event stream は少数サンプルだけ保存します。保存上限は環境変数

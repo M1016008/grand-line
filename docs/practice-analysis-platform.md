@@ -24,7 +24,7 @@ Grand Line の練習機能は、オンライン対戦よりも「自分のデッ
 
 ## Replay Log Contract
 
-`GameReplayLog` remains the canonical full replay shape. To reduce Turso
+`GameReplayLog` remains the canonical full replay shape. To reduce local DB
 storage use, large batch runs may persist every game summary while storing
 full event streams for only a sampled subset of games. The run metadata records
 the storage policy so later tools can distinguish full replays from
@@ -58,7 +58,7 @@ Persistence is intentionally split by weight:
   - Larger runs store summaries for every game, plus sampled full event streams
     (`PRACTICE_DEFAULT_EVENT_SAMPLE_LIMIT`, default 25 games).
   - Even explicit full storage is capped by `PRACTICE_MAX_STORED_EVENT_GAMES`
-    (default 100 games) to protect Turso capacity.
+    (default 100 games) to protect DB capacity.
   - `npm run db:prune:practice` removes old event streams while keeping compact
     game summaries.
 

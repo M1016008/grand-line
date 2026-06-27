@@ -9,24 +9,24 @@
  * endpoint can't be abused as an open SSRF proxy for arbitrary URLs.
  *
  * Caching:
- *   - We pass through Bandai's content-type and ask the browser to cache
- *     for 1 day. Card art is effectively immutable; 24h gives Bandai time
- *     to fix any visual bugs without us needing a cache-buster.
+ *   - We keep a filesystem cache next to the local SSD database, then ask the
+ *     browser to cache for 7 days. Card art is effectively immutable.
  */
 
 import { NextResponse } from "next/server";
+
+import {
+  fetchAndCacheCardImage,
+  IMAGE_CACHE_CONTROL,
+  parseAllowedCardImageUrl,
+  readCachedCardImage,
+} from "@/lib/card-image-cache";
 
 export const runtime = "nodejs";
 // Card art doesn't change per request — let the framework cache the
 // route segment if it wants to. The `cache-control` header on the
 // response governs the browser side.
 export const dynamic = "auto";
-
-const ALLOWED_HOSTS = new Set([
-  "www.onepiece-cardgame.com",
-  "en.onepiece-cardgame.com",
-]);
-const ALLOWED_PATH_PREFIX = "/images/";
 
 export async function GET(req: Request) {
   const u = new URL(req.url).searchParams.get("u");
@@ -36,45 +36,40 @@ export async function GET(req: Request) {
 
   let target: URL;
   try {
-    target = new URL(u);
+    target = parseAllowedCardImageUrl(u);
   } catch {
-    return new NextResponse("invalid url", { status: 400 });
-  }
-  if (target.protocol !== "https:") {
-    return new NextResponse("https only", { status: 400 });
-  }
-  if (!ALLOWED_HOSTS.has(target.hostname)) {
-    return new NextResponse("host not allowed", { status: 400 });
-  }
-  if (!target.pathname.startsWith(ALLOWED_PATH_PREFIX)) {
-    return new NextResponse("path not allowed", { status: 400 });
+    return new NextResponse("invalid or disallowed url", { status: 400 });
   }
 
-  const upstream = await fetch(target.toString(), {
-    headers: {
-      // A few Bandai endpoints reject requests without a UA.
-      "user-agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      // Hint that we accept image bytes; some CDNs vary on this.
-      accept: "image/png,image/jpeg,image/webp,image/*;q=0.8,*/*;q=0.5",
-    },
-    // Don't forward auth/cookies.
-  });
+  try {
+    const cached = await readCachedCardImage(target);
+    return new NextResponse(new Uint8Array(cached.body), {
+      status: 200,
+      headers: {
+        "content-type": cached.contentType,
+        "cache-control": IMAGE_CACHE_CONTROL,
+        "x-grand-line-image-cache": "hit",
+        "x-grand-line-image-source": cached.meta.fetchedUrl ?? cached.meta.sourceUrl,
+      },
+    });
+  } catch {
+    // Cache miss or corrupt cache entry: fetch upstream and rewrite it.
+  }
 
-  if (!upstream.ok) {
-    return new NextResponse(`upstream ${upstream.status}`, {
-      status: upstream.status,
+  try {
+    const image = await fetchAndCacheCardImage(target);
+    return new NextResponse(new Uint8Array(image.body), {
+      status: 200,
+      headers: {
+        "content-type": image.contentType,
+        "cache-control": IMAGE_CACHE_CONTROL,
+        "x-grand-line-image-cache": "miss",
+        "x-grand-line-image-source": image.fetchedUrl,
+      },
+    });
+  } catch (err) {
+    return new NextResponse((err as Error).message || "upstream image unavailable", {
+      status: 502,
     });
   }
-
-  const buf = await upstream.arrayBuffer();
-  return new NextResponse(buf, {
-    status: 200,
-    headers: {
-      "content-type":
-        upstream.headers.get("content-type") ?? "image/png",
-      // Browser caches 1 day; CDN can hold longer if we ever ship one.
-      "cache-control": "public, max-age=86400, stale-while-revalidate=86400",
-    },
-  });
 }

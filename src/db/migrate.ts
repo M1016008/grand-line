@@ -14,27 +14,22 @@ import "@/lib/load-env";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
-import { createClient } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
 
-async function main() {
-  const url = process.env.TURSO_DATABASE_URL;
-  const authToken = process.env.TURSO_AUTH_TOKEN;
-  const localPath = process.env.LOCAL_DB_PATH ?? "./data/grand-line.db";
+import { createDatabaseClient, resolveDatabaseConfig } from "@/db/config";
 
-  if (!url) {
-    await mkdir(path.dirname(localPath), { recursive: true });
+async function main() {
+  const config = resolveDatabaseConfig();
+
+  if (config.kind === "local") {
+    await mkdir(path.dirname(config.localPath), { recursive: true });
   }
 
-  const client = url
-    ? createClient({ url, authToken })
-    : createClient({ url: `file:${localPath}` });
-
+  const client = createDatabaseClient(config);
   const db = drizzle(client);
 
-  const target = url ? `Turso (${url})` : `local file (${localPath})`;
-  console.log(`▶ Applying migrations to ${target}…`);
+  console.log(`▶ Applying migrations to ${config.label}…`);
 
   await migrate(db, { migrationsFolder: "./drizzle/migrations" });
 

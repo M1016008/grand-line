@@ -18,6 +18,8 @@ import path from "node:path";
 
 import { createClient, type Client } from "@libsql/client";
 
+import { resolveDatabaseConfig } from "@/db/config";
+
 interface CliArgs {
   dryRun: boolean;
   eventDays: number;
@@ -82,21 +84,23 @@ function printUsage() {
 }
 
 async function buildClient(): Promise<{ client: Client; target: string }> {
-  const url = process.env.TURSO_DATABASE_URL;
-  const authToken = process.env.TURSO_AUTH_TOKEN;
-  const localPath = process.env.LOCAL_DB_PATH ?? "./data/grand-line.db";
+  const config = resolveDatabaseConfig();
 
-  if (url) {
+  if (config.kind === "turso") {
     return {
-      client: createClient({ url, authToken }),
-      target: `Turso (${url})`,
+      client: createClient(
+        config.authToken
+          ? { url: config.url, authToken: config.authToken }
+          : { url: config.url },
+      ),
+      target: config.label,
     };
   }
 
-  await mkdir(path.dirname(localPath), { recursive: true });
+  await mkdir(path.dirname(config.localPath), { recursive: true });
   return {
-    client: createClient({ url: `file:${localPath}` }),
-    target: `local file (${localPath})`,
+    client: createClient({ url: config.url }),
+    target: config.label,
   };
 }
 

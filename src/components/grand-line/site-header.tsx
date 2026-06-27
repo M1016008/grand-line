@@ -6,6 +6,8 @@ const NAV = [
   { href: "/cards" as const, label: "カード" },
   { href: "/sets" as const, label: "セット" },
   { href: "/decks" as const, label: "デッキ" },
+  { href: "/battle" as const, label: "対戦" },
+  { href: "/practice" as const, label: "練習" },
   { href: "/synergy" as const, label: "シナジー" },
   { href: "/regulations" as const, label: "禁止/制限" },
   { href: "/probability" as const, label: "確率", soon: true },

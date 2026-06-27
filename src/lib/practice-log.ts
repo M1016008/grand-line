@@ -1,5 +1,57 @@
 export type PracticeSide = "player" | "opponent";
-export type CpuSkill = "beginner" | "advanced";
+export const CPU_LEVELS = [
+  {
+    value: "level1",
+    label: "Lv.1 ルーキー",
+    detail: "コスト順に素直に動く、はじめての練習相手",
+  },
+  {
+    value: "level2",
+    label: "Lv.2 見習い",
+    detail: "DON!!の使い切りと基本の攻撃を意識するCPU",
+  },
+  {
+    value: "level3",
+    label: "Lv.3 航海士",
+    detail: "手札価値、特徴、打点を見て候補手を選ぶCPU",
+  },
+  {
+    value: "level4",
+    label: "Lv.4 船長",
+    detail: "マリガン、リーサル、守りを強めに評価するCPU",
+  },
+  {
+    value: "level5",
+    label: "Lv.5 四皇級",
+    detail: "終盤の詰めとテンポ差を厳しく突く練習相手",
+  },
+] as const;
+
+export type CpuSkill = (typeof CPU_LEVELS)[number]["value"];
+
+export const CPU_LEVEL_VALUES = CPU_LEVELS.map((level) => level.value) as [
+  CpuSkill,
+  CpuSkill,
+  CpuSkill,
+  CpuSkill,
+  CpuSkill,
+];
+
+export function normalizeCpuSkill(value: unknown): CpuSkill | null {
+  if (value === "beginner") return "level1";
+  if (value === "advanced") return "level4";
+  if (typeof value !== "string") return null;
+  return CPU_LEVEL_VALUES.includes(value as CpuSkill) ? (value as CpuSkill) : null;
+}
+
+export function cpuSkillRank(skill: CpuSkill): number {
+  return CPU_LEVEL_VALUES.indexOf(skill) + 1;
+}
+
+export function cpuSkillLabel(skill: CpuSkill): string {
+  return CPU_LEVELS.find((level) => level.value === skill)?.label ?? skill;
+}
+
 export type WinReason = "leader_damage" | "deck_out" | "effect_win" | "score_at_limit";
 
 export interface RulesReference {

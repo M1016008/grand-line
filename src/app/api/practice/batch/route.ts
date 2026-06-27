@@ -9,7 +9,12 @@ import {
   type PracticeDeck,
 } from "@/lib/practice-sim";
 import type { CardListItem } from "@/lib/cards";
-import type { GameEvent, GameReplayLog } from "@/lib/practice-log";
+import {
+  normalizeCpuSkill,
+  type CpuSkill,
+  type GameEvent,
+  type GameReplayLog,
+} from "@/lib/practice-log";
 import {
   resolvePracticeStoragePolicy,
   selectPracticeEventGameIndexes,
@@ -20,6 +25,18 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const MAX_BATCH_GAMES = 10_000;
+
+const cpuSkillSchema = z.string().transform((value, ctx): CpuSkill => {
+  const normalized = normalizeCpuSkill(value);
+  if (!normalized) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Invalid CPU level",
+    });
+    return "level1";
+  }
+  return normalized;
+});
 
 const cardSchema = z.object({
   id: z.string(),
@@ -60,7 +77,7 @@ const bodySchema = z.object({
   opponentDeck: practiceDeckSchema,
   games: z.number().int().min(1).max(MAX_BATCH_GAMES),
   seed: z.number().int(),
-  cpuSkill: z.enum(["beginner", "advanced"]),
+  cpuSkill: cpuSkillSchema,
   eventStorageMode: z.enum(["auto", "full", "sampled", "summary_only"]).optional(),
   eventSampleLimit: z.number().int().min(0).max(1_000).optional(),
 });

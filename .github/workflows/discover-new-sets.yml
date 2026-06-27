@@ -1,27 +1,19 @@
-# Scheduled discovery of new Bandai sets.
+# Manual discovery smoke test for new Bandai sets.
 #
-# Bandai adds a new pack roughly every 3-4 months. A weekly one-page
-# dropdown check is cheap enough to run automatically, and newly found
-# sets are scraped immediately so the card DB catches up without a
-# manual second step.
+# Production discovery now runs on the local workstation so the attached SSD
+# database is updated directly. GitHub Actions cannot access that disk, so this
+# workflow writes only to an ephemeral local DB when run manually.
 #
 # Behaviour: re-fetches the cardlist root, parses the dropdown, finds
 # any seriesId not already in SERIES_PARAM ∪ scrape_targets, persists
 # the new entries to scrape_targets, and immediately scrapes each one
 # so the cards land in the DB without a second manual step.
 #
-# Required repo secrets:
-#   TURSO_DATABASE_URL
-#   TURSO_AUTH_TOKEN
-#
-# Schedule: Tuesdays at 00:00 UTC = 09:00 JST.
-# Manual run: Actions → "Discover new sets" → "Run workflow".
+# Manual run: Actions -> "Discover new sets" -> "Run workflow".
 
 name: Discover new sets
 
 on:
-  schedule:
-    - cron: "0 0 * * 2"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -41,8 +33,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+      GRAND_LINE_DATABASE_MODE: local
+      LOCAL_DB_PATH: ./data/grand-line-ci.db
     steps:
       - uses: actions/checkout@v4
 
@@ -51,17 +43,13 @@ jobs:
           node-version: "22"
           cache: "npm"
 
-      - name: Verify required secrets
-        run: |
-          if [ -z "${TURSO_DATABASE_URL:-}" ] || [ -z "${TURSO_AUTH_TOKEN:-}" ]; then
-            echo "::error::TURSO_DATABASE_URL and TURSO_AUTH_TOKEN must be set as repo secrets"
-            exit 1
-          fi
-
       - run: npm ci
 
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
+
+      - name: Prepare local DB
+        run: npm run db:migrate
 
       - name: Discover and scrape
         run: |

@@ -1,23 +1,14 @@
-# Scheduled refresh of Bandai JP card data.
+# Manual scraper smoke test for Bandai JP card data.
 #
-# The weekly discover workflow handles newly announced sets quickly. This
-# monthly refresh re-scrapes every known set at a polite delay so existing
-# card text, images, and reprint memberships stay aligned with Bandai's
-# live cardlist if they make corrections after release.
+# Production refreshes now run on the local workstation so the attached SSD
+# database is updated directly. GitHub Actions cannot access that disk, so this
+# workflow writes only to an ephemeral local DB when run manually.
 #
-# Schedule: 1st day of every month at 00:00 UTC = 09:00 JST.
-#
-# Required repo secrets:
-#   TURSO_DATABASE_URL
-#   TURSO_AUTH_TOKEN
-#
-# Manual run: Actions → "Scrape Bandai cards" → "Run workflow".
+# Manual run: Actions -> "Scrape Bandai cards" -> "Run workflow".
 
 name: Scrape Bandai cards
 
 on:
-  schedule:
-    - cron: "0 0 1 * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -50,8 +41,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
-      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+      GRAND_LINE_DATABASE_MODE: local
+      LOCAL_DB_PATH: ./data/grand-line-ci.db
       RUN_MODE: ${{ inputs.mode || 'discover-and-full-refresh' }}
       SET_CODES: ${{ inputs.set_codes || '' }}
       DRY_RUN: ${{ inputs.dry_run || false }}
@@ -63,17 +54,13 @@ jobs:
           node-version: "22"
           cache: "npm"
 
-      - name: Verify required secrets
-        run: |
-          if [ -z "${TURSO_DATABASE_URL:-}" ] || [ -z "${TURSO_AUTH_TOKEN:-}" ]; then
-            echo "::error::TURSO_DATABASE_URL and TURSO_AUTH_TOKEN must be set as repo secrets"
-            exit 1
-          fi
-
       - run: npm ci
 
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
+
+      - name: Prepare local DB
+        run: npm run db:migrate
 
       - name: Discover new sets
         if: env.RUN_MODE != 'full-refresh-only'

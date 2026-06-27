@@ -211,7 +211,7 @@ export default async function CardDetailPage({ params }: PageProps) {
           </div>
         </div>
 
-        <PlaystyleSection playstyle={playstyle} />
+        <PlaystyleSection cardId={card.id} playstyle={playstyle} />
         <CompatibleCardsSection results={compatible} />
       </main>
     </>

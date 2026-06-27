@@ -1,20 +1,21 @@
 # GitHub Actions secrets
 
-Set these in **Settings → Secrets and variables → Actions → Repository
-secrets** of the GitHub repo. They are required for the scrape /
-discover workflows; the CI workflow itself does not need any secrets.
+The current scraper workflows are manual smoke tests that write to an
+ephemeral local SQLite file inside GitHub Actions. Production data refreshes
+run on the local workstation so the attached SSD database is updated directly.
+No GitHub Actions secrets are required for the current scrape / discover /
+maintenance workflows.
 
 ## Required
 
-| Secret | Used by | Source |
-| --- | --- | --- |
-| `TURSO_DATABASE_URL` | scrape / maintenance workflows | `turso db show onepiece-tcg --url` |
-| `TURSO_AUTH_TOKEN`   | same | `turso group tokens create default` |
+None.
 
 ## Optional (not currently used, reserved for future workflows)
 
 | Secret | Used by | Source |
 | --- | --- | --- |
+| `TURSO_DATABASE_URL` | optional remote DB experiments | `turso db show onepiece-tcg --url` |
+| `TURSO_AUTH_TOKEN` | optional remote DB experiments | `turso group tokens create default` |
 | `ANTHROPIC_API_KEY` | (future) AI synergy + AI deck-proposal background jobs | https://console.anthropic.com/ |
 
 ## Token rotation
@@ -35,7 +36,7 @@ database or move it between organizations.
 | Workflow | Schedule | Trigger |
 | --- | --- | --- |
 | `ci.yml` | — | every push to `main`, every PR |
-| `scrape-regulations.yml` | weekly (Mon 00:00 UTC) | + manual via "Run workflow" |
-| `discover-new-sets.yml` | weekly (Tue 00:00 UTC) | + manual via "Run workflow" |
-| `scrape-bandai-cards.yml` | monthly (1st 00:00 UTC) | + manual via "Run workflow" |
-| `db-maintenance.yml` | weekly (Sun 00:00 UTC) | + manual via "Run workflow" |
+| `scrape-regulations.yml` | — | manual via "Run workflow" |
+| `discover-new-sets.yml` | — | manual via "Run workflow" |
+| `scrape-bandai-cards.yml` | — | manual via "Run workflow" |
+| `db-maintenance.yml` | — | manual via "Run workflow" |

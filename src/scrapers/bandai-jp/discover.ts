@@ -82,7 +82,12 @@ export async function fetchAndPersistRoot(): Promise<string> {
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     });
     const page = await ctx.newPage();
-    await page.goto(URL, { waitUntil: "networkidle", timeout: 60_000 });
+    await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    await page.waitForSelector("select#series option", {
+      state: "attached",
+      timeout: 30_000,
+    });
+    await page.waitForTimeout(1_000);
     const html = await page.content();
     await mkdir(path.dirname(FIXTURE_PATH), { recursive: true });
     await writeFile(FIXTURE_PATH, html, "utf-8");

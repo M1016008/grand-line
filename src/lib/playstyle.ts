@@ -15,6 +15,7 @@ export interface CardPlaystyle {
   shinesInJa: string;
   vsOpponentJa: string;
   aiModelVersion: string;
+  generatedAt: string | null;
 }
 
 export async function getCardPlaystyle(
@@ -28,13 +29,26 @@ export async function getCardPlaystyle(
         shinesInJa: schema.cardPlaystyles.shinesInJa,
         vsOpponentJa: schema.cardPlaystyles.vsOpponentJa,
         aiModelVersion: schema.cardPlaystyles.aiModelVersion,
+        generatedAt: schema.cardPlaystyles.generatedAt,
       })
       .from(schema.cardPlaystyles)
       .where(eq(schema.cardPlaystyles.cardId, cardId))
       .limit(1);
-    return rows[0] ?? null;
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      ...row,
+      generatedAt: serializeDate(row.generatedAt),
+    };
   } catch {
     /* table missing — fall through */
     return null;
   }
+}
+
+function serializeDate(value: Date | number | string | null): string | null {
+  if (value === null) return null;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "number") return new Date(value * 1000).toISOString();
+  return value;
 }

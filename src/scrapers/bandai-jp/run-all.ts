@@ -3,7 +3,7 @@
  * configurable delay between requests so we don't hammer the Bandai
  * cardlist endpoint.
  *
- * Defaults: 8 second delay between sets, 1 retry on transient failure.
+ * Defaults: 8 second delay between sets, 2 retries on transient failure.
  * Failures don't abort the run — they're collected and printed at the
  * end so a single broken set doesn't waste the work of the others.
  *
@@ -12,6 +12,7 @@
  *   npm run scrape:bandai-jp:all -- --skip OP01,OP02   # don't refetch
  *   npm run scrape:bandai-jp:all -- --only ST29        # one set only
  *   npm run scrape:bandai-jp:all -- --delay-ms 2000    # speed up dev
+ *   npm run scrape:bandai-jp:all -- --retries 3        # retry flaky site fetches
  *   npm run scrape:bandai-jp:all -- --from-fixture     # use saved HTML
  *
  * Already-saved fixtures (`data/raw/bandai-jp/<set>.html`) take precedence
@@ -31,6 +32,7 @@ interface CliArgs {
   skip: Set<string>;
   only: string[] | null;
   delayMs: number;
+  retries: number;
   fromFixture: boolean;
   dryRun: boolean;
 }
@@ -40,6 +42,7 @@ function parseArgs(argv: string[]): CliArgs {
     skip: new Set(),
     only: null,
     delayMs: 8_000,
+    retries: 2,
     fromFixture: false,
     dryRun: false,
   };
@@ -48,6 +51,7 @@ function parseArgs(argv: string[]): CliArgs {
     if (arg === "--skip") args.skip = new Set(argv[++i].split(","));
     else if (arg === "--only") args.only = argv[++i].split(",");
     else if (arg === "--delay-ms") args.delayMs = Number(argv[++i]);
+    else if (arg === "--retries") args.retries = Number(argv[++i]);
     else if (arg === "--from-fixture") args.fromFixture = true;
     else if (arg === "--dry-run") args.dryRun = true;
   }
@@ -68,27 +72,11 @@ async function loadTargetSetCodes(): Promise<string[]> {
   );
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
+async function scrapeTarget(setCode: string, args: CliArgs, prefix: string) {
+  let lastError: unknown;
+  const attempts = Math.max(1, args.retries + 1);
 
-  const knownSetCodes = args.only ?? (await loadTargetSetCodes());
-  const targets = knownSetCodes.filter(
-    (code) => !args.skip.has(code),
-  );
-
-  console.log(
-    `▶ Scraping ${targets.length} set(s) ${args.fromFixture ? "(from fixture)" : "(live fetch)"}, delay ${args.delayMs}ms${args.dryRun ? ", DRY-RUN" : ""}`,
-  );
-
-  const summary: Array<{
-    setCode: string;
-    cards: number;
-    error?: string;
-  }> = [];
-
-  for (let i = 0; i < targets.length; i++) {
-    const setCode = targets[i];
-    const prefix = `[${i + 1}/${targets.length}] ${setCode}`;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       const fixture = args.fromFixture
         ? await loadFixture(setCode)
@@ -103,7 +91,47 @@ async function main() {
           `${prefix}  parsed=${cards.length} upserted=${r.cardsUpserted} translations=${r.translationsUpserted} memberships=${r.membershipsAdded}`,
         );
       }
-      summary.push({ setCode, cards: cards.length });
+
+      return cards.length;
+    } catch (err) {
+      lastError = err;
+      if (attempt >= attempts) break;
+
+      const msg = (err as Error).message;
+      console.warn(`${prefix}  retry ${attempt}/${attempts - 1} after: ${msg}`);
+      if (!args.fromFixture) {
+        await sleep(Math.max(5_000, Math.floor(args.delayMs / 2)));
+      }
+    }
+  }
+
+  throw lastError;
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+
+  const knownSetCodes = args.only ?? (await loadTargetSetCodes());
+  const targets = knownSetCodes.filter(
+    (code) => !args.skip.has(code),
+  );
+
+  console.log(
+    `▶ Scraping ${targets.length} set(s) ${args.fromFixture ? "(from fixture)" : "(live fetch)"}, delay ${args.delayMs}ms, retries ${args.retries}${args.dryRun ? ", DRY-RUN" : ""}`,
+  );
+
+  const summary: Array<{
+    setCode: string;
+    cards: number;
+    error?: string;
+  }> = [];
+
+  for (let i = 0; i < targets.length; i++) {
+    const setCode = targets[i];
+    const prefix = `[${i + 1}/${targets.length}] ${setCode}`;
+    try {
+      const cards = await scrapeTarget(setCode, args, prefix);
+      summary.push({ setCode, cards });
     } catch (err) {
       const msg = (err as Error).message;
       console.error(`${prefix}  ✗ ${msg}`);
