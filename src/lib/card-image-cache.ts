@@ -58,8 +58,12 @@ export function imageCacheRoot() {
   return path.join(process.cwd(), "data", "cache", "card-images");
 }
 
+export function imageCacheKey(target: URL) {
+  return createHash("sha256").update(target.toString()).digest("hex");
+}
+
 export function imageCachePaths(target: URL) {
-  const key = createHash("sha256").update(target.toString()).digest("hex");
+  const key = imageCacheKey(target);
   const dir = imageCacheRoot();
   return {
     bodyPath: path.join(dir, `${key}.bin`),

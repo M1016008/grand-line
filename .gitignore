@@ -49,6 +49,7 @@ next-env.d.ts
 /scrape-output/
 
 # local data dumps
+/data/cache/
 /data/raw/
 /data/processed/
 *.sqlite
@@ -60,4 +61,3 @@ next-env.d.ts
 .vscode/*
 !.vscode/settings.json
 !.vscode/extensions.json
-

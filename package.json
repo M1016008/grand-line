@@ -16,6 +16,7 @@
     "db:prune:practice": "tsx src/db/prune-practice.ts",
     "db:optimize": "tsx src/db/prune-practice.ts --vacuum",
     "db:optimize:site": "tsx src/db/optimize-site-data.ts",
+    "db:manage-cache": "tsx src/db/manage-cache.ts",
     "db:warm-images": "tsx src/db/warm-image-cache.ts",
     "db:refresh-mechanics": "tsx src/db/refresh-mechanics.ts",
     "db:studio": "drizzle-kit studio",

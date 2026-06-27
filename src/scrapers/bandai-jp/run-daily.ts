@@ -73,8 +73,10 @@ async function main() {
 
   const delayMs = process.env.DAILY_SCRAPE_DELAY_MS ?? "8000";
   const optimize = process.env.DAILY_SCRAPE_OPTIMIZE !== "false";
+  const manageCache = process.env.DAILY_CACHE_MANAGE !== "false";
   const warmImages = process.env.DAILY_IMAGE_CACHE_WARM !== "false";
   const imageConcurrency = process.env.DAILY_IMAGE_CACHE_CONCURRENCY ?? "8";
+  const imageCacheMaxMb = process.env.IMAGE_CACHE_MAX_MB ?? "2048";
   const failures: string[] = [];
 
   console.log(`▶ Daily scrape target: ${config.label}`);
@@ -110,6 +112,18 @@ async function main() {
     }
     if (!run("Optimize site data", "npm", ["run", "db:optimize:site"], childEnv, { allowFailure: true })) {
       failures.push("site data optimize");
+    }
+  }
+
+  if (manageCache) {
+    if (!run(
+      "Manage local caches",
+      "npm",
+      ["run", "db:manage-cache", "--", "--max-image-cache-mb", imageCacheMaxMb],
+      childEnv,
+      { allowFailure: true },
+    )) {
+      failures.push("local cache management");
     }
   }
 
