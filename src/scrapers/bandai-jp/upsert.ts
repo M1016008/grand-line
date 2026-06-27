@@ -13,7 +13,7 @@
  * relocate the OG OP01-001 to PRB02. Reprints surface via the
  * card_set_membership join table instead.
  */
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 import { db } from "@/db";
 import {
@@ -21,6 +21,7 @@ import {
   cardSetMembership,
   cardTranslations,
   cards,
+  scrapeTargets,
 } from "@/db/schema";
 import { extractMechanics } from "@/lib/mechanics";
 import { normalizeEffectText } from "@/lib/normalize";
@@ -189,6 +190,13 @@ export async function upsertScrapedCards(
         },
       });
     translationsUpserted += 1;
+  }
+
+  if (opts.scrapedSetCode) {
+    await db
+      .update(scrapeTargets)
+      .set({ lastScrapedAt: new Date() })
+      .where(eq(scrapeTargets.setCode, opts.scrapedSetCode));
   }
 
   return {

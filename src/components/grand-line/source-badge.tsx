@@ -4,7 +4,6 @@
  * hallucination-honesty contract enforced by `card_translations.source` /
  * `verified` in the schema.
  */
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { CardTranslationSource } from "@/db/schema";
 
@@ -44,21 +43,20 @@ const PRESETS: Record<
 export function SourceBadge({ source, verified, className }: SourceBadgeProps) {
   const preset = PRESETS[source];
   const verifiedSuffix = verified ? " · ✓" : " · 未確認";
+  const label = `${preset.label}${verifiedSuffix}`;
+
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span
-          className={cn(
-            "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium tracking-wide uppercase",
-            preset.tone,
-            className,
-          )}
-        >
-          {preset.label}
-          <span className="opacity-70">{verifiedSuffix}</span>
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="top">{preset.tooltip}</TooltipContent>
-    </Tooltip>
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium tracking-wide uppercase",
+        preset.tone,
+        className,
+      )}
+      title={preset.tooltip}
+      aria-label={`${label}: ${preset.tooltip}`}
+    >
+      {preset.label}
+      <span className="opacity-70">{verifiedSuffix}</span>
+    </span>
   );
 }

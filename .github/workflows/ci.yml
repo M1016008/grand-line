@@ -1,8 +1,8 @@
 # CI for every push to main and every pull request.
 #
 # Runs the four checks the human runs locally before each commit:
-# typecheck, lint, build, unit tests. No DB or secrets needed — the
-# tests are pure-TS and the build doesn't connect to Turso.
+# typecheck, lint, build, unit tests. The build uses an ephemeral local
+# SQLite/libSQL file because GitHub Actions cannot access the attached SSD.
 
 name: CI
 
@@ -23,6 +23,11 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      GRAND_LINE_DATABASE_MODE: local
+      LOCAL_DB_PATH: ./data/grand-line-ci.db
+      TURSO_DATABASE_URL: ""
+      TURSO_AUTH_TOKEN: ""
     steps:
       - uses: actions/checkout@v4
 
@@ -32,6 +37,9 @@ jobs:
           cache: "npm"
 
       - run: npm ci
+
+      - name: prepare local DB
+        run: npm run db:migrate
 
       - name: typecheck
         run: npm run typecheck
