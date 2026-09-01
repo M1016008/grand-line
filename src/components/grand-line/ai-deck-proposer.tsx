@@ -444,6 +444,10 @@ export function AiDeckProposer({
               expandedStep={expandedStep}
               onToggleStep={toggleStep}
               onAdvanceStep={advanceTo}
+              onBenchmarkStart={() => {
+                setBenchmarkComplete(false);
+                setOptimizerComplete(false);
+              }}
               onBenchmarkComplete={() => setBenchmarkComplete(true)}
               onOptimizerComplete={() => setOptimizerComplete(true)}
               onApplyCards={applyCards}

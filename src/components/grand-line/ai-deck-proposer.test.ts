@@ -134,4 +134,41 @@ test("applied proposal status is persistent in the workspace and Save remains ma
   assert.match(component, /自動保存はしていません/);
   assert.match(component, /document\.getElementById\("deck-save"\)/);
   assert.doesNotMatch(component, /fetch\("\/api\/decks"/);
+  assert.match(component, /if \(benchmarkComplete\) completedSteps\.add\(3\);/);
+  assert.match(component, /if \(optimizerComplete\) completedSteps\.add\(4\);/);
+});
+
+test("benchmark completion flags are reset on rerun and set only by benchmark completion", async () => {
+  const component = await source(
+    "src",
+    "components",
+    "grand-line",
+    "ai-deck-proposer.tsx",
+  );
+  const benchmark = await source(
+    "src",
+    "components",
+    "grand-line",
+    "deck-battle-benchmark.tsx",
+  );
+  assert.match(
+    component,
+    /onBenchmarkStart=\{[\s\S]*setBenchmarkComplete\(false\);[\s\S]*setOptimizerComplete\(false\);/,
+  );
+  assert.match(benchmark, /onBenchmarkStart\?\.\(\);/);
+  assert.match(component, /onBenchmarkComplete=\{[^\n]*setBenchmarkComplete\(true\)/);
+  assert.doesNotMatch(benchmark, /onBenchmarkComplete.*setOptimizerComplete\(true\)/);
+});
+
+test("deck-save anchor targets the save deck section", async () => {
+  const builder = await source(
+    "src",
+    "components",
+    "grand-line",
+    "deck-builder.tsx",
+  );
+  assert.match(
+    builder,
+    /id="deck-save"[\s\S]*>\s*<CardContent[\s\S]*<label[\s\S]*>\s*Save deck/im,
+  );
 });

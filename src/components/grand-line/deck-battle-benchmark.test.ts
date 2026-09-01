@@ -140,6 +140,25 @@ test("optimizer appears only after a completed benchmark and preserves variant o
   assert.match(component, /setVariantOverrides/);
   assert.match(component, /candidate\.resultingDeck\.cards/);
   assert.match(component, /void runBenchmark\(\)/);
+  assert.match(
+    component,
+    /onRebenchmark=\{\s*\(\) => \{\s*onAdvanceStep\(3\);\s*void runBenchmark\(\);\s*\}\}/,
+  );
+  assert.doesNotMatch(component, /onRebenchmark=\{\s*setVariantOverrides/);
+});
+
+test("benchmark start callback resets step completions while run is in progress", async () => {
+  const component = await source(
+    "src",
+    "components",
+    "grand-line",
+    "deck-battle-benchmark.tsx",
+  );
+  assert.match(component, /onBenchmarkStart\?\.\(\);/);
+  assert.match(
+    component,
+    /async function runBenchmark\(\)\s*\{\s*onAdvanceStep\(3\);\s*onBenchmarkStart\?\.\(\);\s*setRunning\(true\);/,
+  );
 });
 
 test("optimizer candidate emphasizes a thumbnail OUT to IN swap and visible apply state", async () => {

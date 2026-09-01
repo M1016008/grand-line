@@ -46,6 +46,7 @@ interface DeckBattleBenchmarkProps {
   expandedStep: DeckIntelligenceStep | null;
   onToggleStep: (step: DeckIntelligenceStep) => void;
   onAdvanceStep: (step: DeckIntelligenceStep) => void;
+  onBenchmarkStart?: () => void;
   onBenchmarkComplete: () => void;
   onOptimizerComplete: () => void;
   onApplyCards: (
@@ -81,6 +82,7 @@ export function DeckBattleBenchmark({
   expandedStep,
   onToggleStep,
   onAdvanceStep,
+  onBenchmarkStart,
   onBenchmarkComplete,
   onOptimizerComplete,
   onApplyCards,
@@ -149,6 +151,7 @@ export function DeckBattleBenchmark({
 
   async function runBenchmark() {
     onAdvanceStep(3);
+    onBenchmarkStart?.();
     setRunning(true);
     setError(null);
     setResult(null);

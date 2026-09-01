@@ -317,7 +317,7 @@ export function DeckBuilder({
         </Card>
 
         {/* Counter + curve */}
-        <Card id="deck-save" className="border-border/40 bg-card/40">
+        <Card className="border-border/40 bg-card/40">
           <CardContent className="space-y-3 p-4">
             <div className="flex items-baseline justify-between">
               <span className="text-muted-foreground text-[11px] tracking-widest uppercase">
@@ -346,7 +346,7 @@ export function DeckBuilder({
           </CardContent>
         </Card>
 
-        <Card className="border-border/40 bg-card/40">
+        <Card id="deck-save" className="border-border/40 bg-card/40">
           <CardContent className="space-y-3 p-4">
             <div>
               <label
