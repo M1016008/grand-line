@@ -25,13 +25,31 @@ import { z } from "zod";
 import type Anthropic from "@anthropic-ai/sdk";
 
 import { getAnthropic, MODEL } from "@/ai/client";
-import type { CardListItem } from "@/lib/cards";
+import type { CardCoachFactInput } from "@/ai/card-coach";
 import {
   validateDeck,
   type DeckLeader,
+  type DeckRegulations,
   type DeckRuleCard,
   type RuleViolation,
 } from "@/lib/deck-rules";
+import { buildDeckCoachMetrics } from "@/lib/deck-coach-metrics";
+import {
+  buildDeckCandidateRankingContext,
+  calculateLeaderStyleAptitudesFromContext,
+  eligibleDeckCandidates,
+  FEATURE_TAG_LABELS,
+  MAIN_STYLE_LABELS,
+  rankDeckCandidates,
+  recommendedMainStyle,
+  resolveDeckPreferences,
+  seedAnalysisPool,
+  type DeckPreferenceSelection,
+  type FeatureTag,
+  type LeaderStyleAptitude,
+  type MainStyle,
+} from "@/lib/deck-intelligence-preferences";
+import type { RuleSynergy } from "@/lib/synergy-rules";
 
 const MAX_RETRIES = 2;
 const POOL_SIZE_CAP = 220;
@@ -61,8 +79,18 @@ const PROPOSE_DECK_TOOL: Anthropic.Tool = {
           properties: {
             card_id: { type: "string" },
             count: { type: "integer", minimum: 1, maximum: 4 },
+            role_ja: {
+              type: "string",
+              description: "このデッキでの役割を表す短い日本語。",
+              maxLength: 80,
+            },
+            selection_reason_ja: {
+              type: "string",
+              description: "リーダー・スタイル・他カードとの関係に基づく採用理由。",
+              maxLength: 240,
+            },
           },
-          required: ["card_id", "count"],
+          required: ["card_id", "count", "role_ja", "selection_reason_ja"],
           additionalProperties: false,
         },
         minItems: 13, // 50 / 4 = 12.5; rounded up
@@ -72,6 +100,48 @@ const PROPOSE_DECK_TOOL: Anthropic.Tool = {
         type: "string",
         description: "How this deck wins, in 1-2 Japanese sentences.",
         maxLength: 240,
+      },
+      deck_concept_ja: {
+        type: "string",
+        description: "リーダーと選択スタイルを軸にしたデッキコンセプト。",
+        maxLength: 500,
+      },
+      style_aptitude_reason_ja: {
+        type: "string",
+        description:
+          "system算出済み適性を前提に、選択スタイルがこのリーダーに合う/合いにくい理由だけを説明。星やscoreは生成しない。",
+        maxLength: 320,
+      },
+      key_cards: {
+        type: "array",
+        description: "候補プール内の中核card_id。",
+        items: { type: "string" },
+        maxItems: 8,
+      },
+      major_combos: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            title_ja: { type: "string", maxLength: 100 },
+            card_ids: {
+              type: "array",
+              items: { type: "string" },
+              minItems: 2,
+              maxItems: 5,
+            },
+            explanation_ja: { type: "string", maxLength: 320 },
+          },
+          required: ["title_ja", "card_ids", "explanation_ja"],
+          additionalProperties: false,
+        },
+        maxItems: 6,
+      },
+      curve_explanation_ja: {
+        type: "string",
+        description:
+          "具体的な数値を創作せず、選択したカードのコスト帯がスタイルとゲームプランをどう支えるかを説明。",
+        maxLength: 320,
       },
       strengths: {
         type: "array",
@@ -107,6 +177,11 @@ const PROPOSE_DECK_TOOL: Anthropic.Tool = {
       "archetype_name",
       "cards",
       "win_condition",
+      "deck_concept_ja",
+      "style_aptitude_reason_ja",
+      "key_cards",
+      "major_combos",
+      "curve_explanation_ja",
       "strengths",
       "weaknesses",
       "typical_matchups",
@@ -122,11 +197,24 @@ const proposalSchema = z.object({
       z.object({
         card_id: z.string(),
         count: z.number().int().min(1).max(4),
+        role_ja: z.string().min(1).max(80),
+        selection_reason_ja: z.string().min(1).max(240),
       }),
     )
     .min(1)
     .max(50),
   win_condition: z.string().max(240),
+  deck_concept_ja: z.string().min(1).max(500),
+  style_aptitude_reason_ja: z.string().min(1).max(320),
+  key_cards: z.array(z.string()).max(8),
+  major_combos: z.array(
+    z.object({
+      title_ja: z.string().min(1).max(100),
+      card_ids: z.array(z.string()).min(2).max(5),
+      explanation_ja: z.string().min(1).max(320),
+    }),
+  ).max(6),
+  curve_explanation_ja: z.string().min(1).max(320),
   strengths: z.array(z.string().max(120)).max(4),
   weaknesses: z.array(z.string().max(120)).max(4),
   typical_matchups: z.object({
@@ -142,15 +230,18 @@ export type DeckProposalRaw = z.infer<typeof proposalSchema>;
 /* ──────────────────────────────────────────────────────────────────────── */
 
 export interface DeckSuggestionInput {
-  leader: CardListItem;
+  leader: CardCoachFactInput;
   /** Cards available to the leader (color-filtered). Caller passes the full
    * leader-pool and we further compress before prompting. */
-  pool: CardListItem[];
-  /**
-   * Free-text user nudge — "速攻寄り" / "ブロッカー多め" / "対 OP01-001 を意識".
-   * Forwarded to the model verbatim, capped at 200 chars by the route.
-   */
-  preference?: string;
+  pool: CardCoachFactInput[];
+  /** Main style is the primary user-controlled ranking axis. */
+  selectedStyle?: MainStyle;
+  /** Optional deterministic secondary weights. At most three, without duplicates. */
+  selectedTags?: FeatureTag[];
+  /** Current active restrictions, loaded fail-closed by the route. */
+  regulations: DeckRegulations;
+  /** Persisted AI synergy rows touching the leader, loaded by the route. */
+  persistedSynergies?: RuleSynergy[];
   /** Override the model. Default: Opus per roadmap §8.2. */
   model?: keyof typeof MODEL;
 }
@@ -158,13 +249,65 @@ export interface DeckSuggestionInput {
 export interface DeckSuggestionEntry {
   cardId: string;
   count: number;
+  roleJa: string;
+  selectionReasonJa: string;
+}
+
+export interface DeckSuggestionMetrics {
+  costCurve: Record<string, number>;
+  counterDistribution: Record<string, number>;
+  triggerRatio: number;
+  evaluationScores: {
+    attack: number;
+    stability: number;
+    expansion: number;
+    defense: number;
+    meta: number;
+    composite: number;
+  };
+  majorMechanics: Array<{ mechanic: string; count: number }>;
+}
+
+export function buildPostGenerationMetrics(
+  leader: CardCoachFactInput,
+  entries: Array<{ card: CardCoachFactInput; count: number }>,
+): DeckSuggestionMetrics {
+  const deterministic = buildDeckCoachMetrics(leader, entries);
+  return {
+    costCurve: deterministic.costCurve,
+    counterDistribution: deterministic.counterDistribution,
+    triggerRatio: deterministic.trigger.ratio,
+    evaluationScores: {
+      attack: deterministic.evaluation.attack.score,
+      stability: deterministic.evaluation.stability.score,
+      expansion: deterministic.evaluation.expansion.score,
+      defense: deterministic.evaluation.defense.score,
+      meta: deterministic.evaluation.meta.score,
+      composite: deterministic.evaluation.composite,
+    },
+    majorMechanics: deterministic.majorMechanics,
+  };
 }
 
 export interface DeckSuggestion {
   modelVersion: string;
+  selectedStyle: MainStyle;
+  selectedTags: FeatureTag[];
+  effectiveStyle: Exclude<MainStyle, "auto">;
+  styleAptitudes: LeaderStyleAptitude[];
   archetypeName: string;
   cards: DeckSuggestionEntry[];
   winCondition: string;
+  deckConceptJa: string;
+  styleAptitudeReasonJa: string;
+  keyCards: string[];
+  majorCombos: Array<{
+    titleJa: string;
+    cardIds: string[];
+    explanationJa: string;
+  }>;
+  curveExplanationJa: string;
+  metrics: DeckSuggestionMetrics;
   strengths: string[];
   weaknesses: string[];
   favorable: string[];
@@ -189,64 +332,87 @@ export class DeckSuggestionError extends Error {
 /* ──────────────────────────────────────────────────────────────────────── */
 
 /**
- * Compress the leader's color pool to at most `POOL_SIZE_CAP` cards, biasing
- * toward cards that share a feature with the leader (the ones AI is most
- * likely to want) while keeping room for generic counter-cards / removal.
+ * Compress the verified, color-legal pool to at most `POOL_SIZE_CAP` cards.
+ * Ranking stays leader-first, treats the main style as the preference axis,
+ * and caps feature-tag influence so auxiliary tags cannot take over the deck.
  */
 export function buildCandidatePool(
-  leader: CardListItem,
-  pool: CardListItem[],
-): CardListItem[] {
-  const leaderFeatures = new Set(leader.features);
-  const leaderColors = new Set(leader.colors);
+  leader: CardCoachFactInput,
+  pool: CardCoachFactInput[],
+  selection: DeckPreferenceSelection = resolveDeckPreferences(),
+  regulations: DeckRegulations = {},
+  persistedSynergies: RuleSynergy[] = [],
+): CardCoachFactInput[] {
+  return buildCandidateAnalysis(
+    leader,
+    pool,
+    selection,
+    regulations,
+    persistedSynergies,
+  ).pool;
+}
 
-  const validColor = pool.filter(
-    (c) =>
-      c.id !== leader.id &&
-      c.cardType !== "LEADER" &&
-      c.colors.some((col) => leaderColors.has(col)),
+interface CandidateAnalysis {
+  pool: CardCoachFactInput[];
+  aptitudes: LeaderStyleAptitude[];
+  effectiveStyle: Exclude<MainStyle, "auto">;
+}
+
+function buildCandidateAnalysis(
+  leader: CardCoachFactInput,
+  pool: CardCoachFactInput[],
+  selection: DeckPreferenceSelection,
+  regulations: DeckRegulations,
+  persistedSynergies: RuleSynergy[],
+): CandidateAnalysis {
+  const eligible = eligibleDeckCandidates(leader, pool, regulations) as CardCoachFactInput[];
+  const analysisPool = seedAnalysisPool(leader, eligible) as CardCoachFactInput[];
+  const context = buildDeckCandidateRankingContext(
+    leader,
+    analysisPool,
+    persistedSynergies,
   );
+  const aptitudes = calculateLeaderStyleAptitudesFromContext(
+    leader,
+    analysisPool,
+    eligible.length,
+    context,
+  );
+  const effectiveStyle =
+    selection.selectedStyle === "auto"
+      ? recommendedMainStyle(aptitudes)
+      : selection.selectedStyle;
+  const effectiveSelection = {
+    ...selection,
+    selectedStyle: effectiveStyle,
+  };
+  return {
+    pool: rankDeckCandidates(leader, analysisPool, effectiveSelection, context)
+      .slice(0, POOL_SIZE_CAP)
+      .map((entry) => entry.card as CardCoachFactInput),
+    aptitudes,
+    effectiveStyle,
+  };
+}
 
-  // Bucket A: shares ≥1 feature with leader (archetype core).
-  // Bucket B: removal / blocker / counter staples (generic toolbox).
-  // Bucket C: everything else, kept as filler if buckets A + B are short.
-  const featureMatched: CardListItem[] = [];
-  const staples: CardListItem[] = [];
-  const filler: CardListItem[] = [];
-  for (const c of validColor) {
-    if (c.features.some((f) => leaderFeatures.has(f))) {
-      featureMatched.push(c);
-    } else if (
-      c.mechanics.includes("Blocker") ||
-      c.mechanics.includes("Banish") ||
-      c.mechanics.includes("Trash") ||
-      c.mechanics.includes("RestOpponentCard") ||
-      c.mechanics.includes("ReturnToHand") ||
-      (c.counter ?? 0) >= 2000
-    ) {
-      staples.push(c);
-    } else {
-      filler.push(c);
-    }
-  }
-
-  const sortById = (a: CardListItem, b: CardListItem) => a.id.localeCompare(b.id);
-  featureMatched.sort(sortById);
-  staples.sort(sortById);
-  filler.sort(sortById);
-
-  const out: CardListItem[] = [];
-  out.push(...featureMatched.slice(0, POOL_SIZE_CAP));
-  out.push(...staples.slice(0, Math.max(0, POOL_SIZE_CAP - out.length)));
-  out.push(...filler.slice(0, Math.max(0, POOL_SIZE_CAP - out.length)));
-  return out.slice(0, POOL_SIZE_CAP);
+export function isVerifiedOfficialDeckFact(
+  card: Pick<CardCoachFactInput, "verified" | "source">,
+): boolean {
+  return (
+    card.verified &&
+    (card.source === "official_jp" || card.source === "official_en")
+  );
 }
 
 /* ──────────────────────────────────────────────────────────────────────── */
 /* Prompt                                                                    */
 /* ──────────────────────────────────────────────────────────────────────── */
 
-function describeCard(c: CardListItem): string {
+function compactOfficialText(text: string | null): string {
+  return text?.replace(/\s+/g, " ").trim() || "なし";
+}
+
+function describeCard(c: CardCoachFactInput): string {
   const parts: string[] = [
     c.id,
     `(${c.cardType}, ${c.colors.join("/")})`,
@@ -257,10 +423,27 @@ function describeCard(c: CardListItem): string {
   if (c.hasTrigger) parts.push("[trigger]");
   if (c.features.length > 0) parts.push(`features:[${c.features.join("/")}]`);
   if (c.mechanics.length > 0) parts.push(`mech:[${c.mechanics.join(",")}]`);
-  return `${c.name} — ${parts.join(" ")}`;
+  return [
+    `${c.name} — ${parts.join(" ")}`,
+    `official_effect: ${compactOfficialText(c.effectText)}`,
+    `official_trigger: ${compactOfficialText(c.triggerText)}`,
+  ].join(" | ");
 }
 
-function buildSystem(): string {
+const STYLE_CONSTRUCTION_GUIDANCE: Record<Exclude<MainStyle, "auto">, string> = {
+  aggressive: "序盤から攻撃回数と打点を作れるカードを優先し、終盤札はリーダーの攻めを完結させるものに絞る。",
+  midrange: "中盤の盤面効率を中心に、序盤の接続札と終盤の勝ち筋をリーダー効果に合わせて配分する。",
+  defensive: "防御・ライフ維持・返しの盤面形成を軸にし、守るだけで勝ち筋を失わない構成にする。",
+  removal: "リーダーが扱える除去手段と対象範囲を軸に、除去後に主導権を取るカードを組み合わせる。",
+  control: "妨害、手札効率、終盤の決定力をリーダーの得意なゲーム速度に合わせて構成する。",
+  resource: "サーチ、ルック、DON!!運用など実在するリソース手段から、再現性の高い流れを作る。",
+  combo: "リーダー効果と複数カードの接続を主軸にし、単体でも機能する補助札で不成立時を支える。",
+  tempo: "低中コストの展開と妨害を同じターンに行える流れを優先し、盤面と攻撃権を継続する。",
+  ramp: "DON!!運用から高コスト札へ接続する流れを軸にし、到達前のターンを支える札を確保する。",
+  balanced: "リーダーの主要な強みを中心に、展開・防御・リソース・決定力を候補の実在サポート量に合わせる。",
+};
+
+function buildSystem(effectiveStyle: Exclude<MainStyle, "auto">): string {
   return [
     "あなたはワンピースカードゲームの上級デッキビルダーです。",
     "リーダーと候補カードプールが与えられるので、競技で使える 50 枚デッキを 1 つ提案してください。",
@@ -269,17 +452,26 @@ function buildSystem(): string {
     "- メインデッキは合計ちょうど 50 枚 (sum of count = 50)。リーダーは含めない。",
     "- 同名カード (同じ card_id) は 4 枚まで。",
     "- 候補プールに無い card_id は使わない (ハルシネーション禁止)。",
+    "- 候補は公式確認済みのカード事実だけ。候補に無い効果・コスト・特徴を作らない。",
     "- 必ず propose_deck ツールで応答する。free-form テキストは無視されます。",
     "",
-    "## 推奨方針",
-    "- リーダーの特徴・効果・色からアーキタイプを推定し、それに沿って構築する。",
-    "- コストカーブをなだらかに (1-3 コスト中心、フィニッシャーを 8-12 枚)。",
-    "- 防御札 (counter ≥1000 のキャラ) を 12-16 枚程度。",
-    "- 起動メイン / 登場時 / トリガーのバランスを考慮。",
+    "## 構築方針",
+    "- 全リーダー共通の固定枚数・固定コスト比率は使わない。",
+    "- verified official のリーダー効果、mechanics、features、legal poolのサポート量から構成を決める。",
+    `- 選択スタイルの方針: ${STYLE_CONSTRUCTION_GUIDANCE[effectiveStyle]}`,
+    "- Feature Tagsは補助重み。タグだけを満たすためにリーダー適性やデッキ全体の勝ち筋を崩さない。",
+    "- system算出の適性score/星を変更・生成しない。適性の理由だけを説明する。",
+    "- 数値メトリクスはsystemが生成後に計算するため、推測して出力しない。",
   ].join("\n");
 }
 
-function buildUserPrompt(input: DeckSuggestionInput, pool: CardListItem[]): string {
+function buildUserPrompt(
+  input: DeckSuggestionInput,
+  pool: CardCoachFactInput[],
+  selection: DeckPreferenceSelection,
+  effectiveStyle: Exclude<MainStyle, "auto">,
+  aptitudes: LeaderStyleAptitude[],
+): string {
   const lines: string[] = [];
   lines.push("## リーダー");
   lines.push(`- id: ${input.leader.id}`);
@@ -293,16 +485,45 @@ function buildUserPrompt(input: DeckSuggestionInput, pool: CardListItem[]): stri
   if (input.leader.mechanics.length > 0) {
     lines.push(`- mechanics: ${input.leader.mechanics.join(", ")}`);
   }
+  lines.push(`- official_effect: ${compactOfficialText(input.leader.effectText)}`);
+  lines.push(`- official_trigger: ${compactOfficialText(input.leader.triggerText)}`);
   lines.push("");
 
-  if (input.preference?.trim()) {
-    lines.push("## ユーザー要望");
-    lines.push(input.preference.trim());
-    lines.push("");
-  }
+  lines.push("## ユーザー指定 (system validated)");
+  lines.push(
+    `- main_style: ${selection.selectedStyle} / ${MAIN_STYLE_LABELS[selection.selectedStyle]}`,
+  );
+  lines.push(`- effective_style: ${effectiveStyle} / ${MAIN_STYLE_LABELS[effectiveStyle]}`);
+  lines.push(
+    `- feature_tags: ${
+      selection.selectedTags.length > 0
+        ? selection.selectedTags
+            .map((tag) => `${tag} / ${FEATURE_TAG_LABELS[tag]}`)
+            .join(", ")
+        : "なし"
+    }`,
+  );
+  lines.push(
+    "- main_style を構築の主軸にし、feature_tags は補助要素として使う。タグだけでデッキ全体を極端に歪めない。",
+  );
+  lines.push("");
 
-  lines.push(`## 候補カードプール (${pool.length} 枚)`);
-  lines.push("各行: name — id (type, colors) stat... features:[…] mech:[…]");
+  lines.push("## system算出 Leader Style Aptitude");
+  lines.push("星とscoreはsystem確定値。変更せず、選択スタイルとの適合理由だけを説明する。");
+  for (const aptitude of aptitudes) {
+    lines.push(
+      `- ${aptitude.style}: ${"★".repeat(aptitude.stars)}${"☆".repeat(5 - aptitude.stars)} score=${aptitude.score} signals=${JSON.stringify(aptitude.signals)}`,
+    );
+  }
+  lines.push("");
+
+  lines.push(`## deterministic ranking 済み候補カードプール (${pool.length} 枚)`);
+  lines.push(
+    "順序は system が leader適性、main_style、feature_tags の順で重み付け済み。候補外カードを追加しない。",
+  );
+  lines.push(
+    "各行: name — id (type, colors) stat... features:[…] mech:[…] | official_effect | official_trigger",
+  );
   for (const c of pool) {
     lines.push(`- ${describeCard(c)}`);
   }
@@ -323,8 +544,9 @@ interface ValidatedProposal {
 
 function validateProposal(
   proposal: DeckProposalRaw,
-  leader: CardListItem,
-  poolById: Map<string, CardListItem>,
+  leader: CardCoachFactInput,
+  poolById: Map<string, CardCoachFactInput>,
+  regulations: DeckRegulations,
 ): ValidatedProposal {
   const violations: RuleViolation[] = [];
   const ruleCards: DeckRuleCard[] = [];
@@ -360,12 +582,27 @@ function validateProposal(
     });
   }
 
+  const referencedIds = [
+    ...proposal.key_cards,
+    ...proposal.major_combos.flatMap((combo) => combo.card_ids),
+  ];
+  for (const cardId of new Set(referencedIds)) {
+    if (!poolById.has(cardId)) {
+      violations.push({
+        code: "unknown_card",
+        severity: "error",
+        message: `Referenced card_id ${cardId} is not in the candidate pool.`,
+        cardIds: [cardId],
+      });
+    }
+  }
+
   const leaderShape: DeckLeader = {
     id: leader.id,
     name: leader.name,
     colors: leader.colors,
   };
-  const ruleReport = validateDeck(leaderShape, ruleCards);
+  const ruleReport = validateDeck(leaderShape, ruleCards, regulations);
   for (const v of ruleReport.violations) {
     violations.push(v);
   }
@@ -403,8 +640,31 @@ export async function proposeDeck(
       0,
     );
   }
+  if (!isVerifiedOfficialDeckFact(input.leader)) {
+    throw new DeckSuggestionError(
+      `${input.leader.id} does not have verified official facts.`,
+      0,
+    );
+  }
 
-  const pool = buildCandidatePool(input.leader, input.pool);
+  let selection: DeckPreferenceSelection;
+  try {
+    selection = resolveDeckPreferences(
+      input.selectedStyle,
+      input.selectedTags,
+    );
+  } catch (error) {
+    throw new DeckSuggestionError((error as Error).message, 0);
+  }
+
+  const analysis = buildCandidateAnalysis(
+    input.leader,
+    input.pool,
+    selection,
+    input.regulations,
+    input.persistedSynergies ?? [],
+  );
+  const { pool, aptitudes, effectiveStyle } = analysis;
   if (pool.length < 30) {
     throw new DeckSuggestionError(
       `Candidate pool too small (${pool.length}). Make sure the DB has cards in this leader's color(s).`,
@@ -417,7 +677,16 @@ export async function proposeDeck(
   const model = MODEL[input.model ?? "opus"];
 
   const messages: Anthropic.MessageParam[] = [
-    { role: "user", content: buildUserPrompt(input, pool) },
+    {
+      role: "user",
+      content: buildUserPrompt(
+        input,
+        pool,
+        selection,
+        effectiveStyle,
+        aptitudes,
+      ),
+    },
   ];
 
   let lastViolations: RuleViolation[] = [];
@@ -425,8 +694,8 @@ export async function proposeDeck(
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     const response = await client.messages.create({
       model,
-      max_tokens: 2200,
-      system: buildSystem(),
+      max_tokens: 5000,
+      system: buildSystem(effectiveStyle),
       tools: [PROPOSE_DECK_TOOL],
       tool_choice: { type: "tool", name: "propose_deck" },
       messages,
@@ -453,17 +722,43 @@ export async function proposeDeck(
         },
       ];
     } else {
-      const validated = validateProposal(parsed.data, input.leader, poolById);
+      const validated = validateProposal(
+        parsed.data,
+        input.leader,
+        poolById,
+        input.regulations,
+      );
       const fatal = validated.violations.filter((v) => v.severity === "error");
       if (fatal.length === 0) {
+        const metricEntries = validated.raw.cards.map((entry) => ({
+          card: poolById.get(entry.card_id)!,
+          count: entry.count,
+        }));
+        const metrics = buildPostGenerationMetrics(input.leader, metricEntries);
         return {
           modelVersion: `${model}@${new Date().toISOString().slice(0, 10)}`,
+          selectedStyle: selection.selectedStyle,
+          selectedTags: selection.selectedTags,
+          effectiveStyle,
+          styleAptitudes: aptitudes,
           archetypeName: validated.raw.archetype_name,
           cards: validated.raw.cards.map((c) => ({
             cardId: c.card_id,
             count: c.count,
+            roleJa: c.role_ja,
+            selectionReasonJa: c.selection_reason_ja,
           })),
           winCondition: validated.raw.win_condition,
+          deckConceptJa: validated.raw.deck_concept_ja,
+          styleAptitudeReasonJa: validated.raw.style_aptitude_reason_ja,
+          keyCards: validated.raw.key_cards,
+          majorCombos: validated.raw.major_combos.map((combo) => ({
+            titleJa: combo.title_ja,
+            cardIds: combo.card_ids,
+            explanationJa: combo.explanation_ja,
+          })),
+          curveExplanationJa: validated.raw.curve_explanation_ja,
+          metrics,
           strengths: validated.raw.strengths,
           weaknesses: validated.raw.weaknesses,
           favorable: validated.raw.typical_matchups.favorable,
@@ -490,3 +785,10 @@ export async function proposeDeck(
     lastViolations,
   );
 }
+
+export const _deckSuggestionTestInternals = {
+  buildSystem,
+  buildUserPrompt,
+  proposalSchema,
+  validateProposal,
+};

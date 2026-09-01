@@ -27,6 +27,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useDeckDraft } from "@/stores/deck";
 import type { CardListItem } from "@/lib/cards";
+import type { LeaderStyleAptitude } from "@/lib/deck-intelligence-preferences";
 
 interface DeckBuilderProps {
   leader: CardListItem;
@@ -37,6 +38,8 @@ interface DeckBuilderProps {
   perCardMax?: Record<string, number>;
   /** Banned pairs. */
   pairBans?: Array<{ cardIdA: string; cardIdB: string }>;
+  /** Server-computed deterministic leader/style suitability. */
+  styleAptitudes: LeaderStyleAptitude[];
 }
 
 const TARGET = 50;
@@ -59,6 +62,7 @@ export function DeckBuilder({
   usingMock,
   perCardMax = {},
   pairBans = [],
+  styleAptitudes,
 }: DeckBuilderProps) {
   const router = useRouter();
   const setLeader = useDeckDraft((s) => s.setLeader);
@@ -390,7 +394,11 @@ export function DeckBuilder({
           </CardContent>
         </Card>
 
-        <AiDeckProposer leader={leader} pool={pool} />
+        <AiDeckProposer
+          leader={leader}
+          pool={pool}
+          styleAptitudes={styleAptitudes}
+        />
 
         <RuleReport violations={report.violations} legal={report.legal} />
 

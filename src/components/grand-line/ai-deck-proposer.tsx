@@ -2,25 +2,68 @@
 
 import { useState, useTransition } from "react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import type { CardListItem } from "@/lib/cards";
+import {
+  FEATURE_TAG_IDS,
+  FEATURE_TAG_LABELS,
+  MAIN_STYLE_IDS,
+  MAIN_STYLE_LABELS,
+  MAX_FEATURE_TAGS,
+  type FeatureTag,
+  type LeaderStyleAptitude,
+  type MainStyle,
+} from "@/lib/deck-intelligence-preferences";
 import { proxiedCardImage } from "@/lib/img";
 import { useDeckDraft } from "@/stores/deck";
 
 interface AiDeckProposerProps {
   leader: CardListItem;
   pool: CardListItem[];
+  styleAptitudes: LeaderStyleAptitude[];
 }
 
 interface ProposalResponse {
   modelVersion: string;
+  selectedStyle: MainStyle;
+  selectedTags: FeatureTag[];
+  effectiveStyle: Exclude<MainStyle, "auto">;
+  styleAptitudes: LeaderStyleAptitude[];
   archetypeName: string;
-  cards: Array<{ cardId: string; count: number }>;
+  cards: Array<{
+    cardId: string;
+    count: number;
+    roleJa: string;
+    selectionReasonJa: string;
+  }>;
   winCondition: string;
+  deckConceptJa: string;
+  styleAptitudeReasonJa: string;
+  keyCards: string[];
+  majorCombos: Array<{
+    titleJa: string;
+    cardIds: string[];
+    explanationJa: string;
+  }>;
+  curveExplanationJa: string;
+  metrics: {
+    costCurve: Record<string, number>;
+    counterDistribution: Record<string, number>;
+    triggerRatio: number;
+    evaluationScores: Record<string, number>;
+    majorMechanics: Array<{ mechanic: string; count: number }>;
+  };
   strengths: string[];
   weaknesses: string[];
   favorable: string[];
@@ -34,12 +77,21 @@ interface ApiError {
   attempts?: number;
 }
 
-export function AiDeckProposer({ leader, pool }: AiDeckProposerProps) {
-  const [preference, setPreference] = useState("");
+export function AiDeckProposer({
+  leader,
+  pool,
+  styleAptitudes,
+}: AiDeckProposerProps) {
+  const [selectedStyle, setSelectedStyle] = useState<MainStyle>("auto");
+  const [selectedTags, setSelectedTags] = useState<FeatureTag[]>([]);
   const [proposal, setProposal] = useState<ProposalResponse | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [pending, startTransition] = useTransition();
   const replace = useDeckDraft((s) => s.replace);
+  const displayedAptitudes = proposal?.styleAptitudes ?? styleAptitudes;
+  const aptitudeByStyle = new Map(
+    displayedAptitudes.map((aptitude) => [aptitude.style, aptitude]),
+  );
 
   // Pool lookup so we can hydrate the AI's bare {cardId,count} into full cards.
   const poolById = new Map(pool.map((c) => [c.id, c]));
@@ -50,7 +102,7 @@ export function AiDeckProposer({ leader, pool }: AiDeckProposerProps) {
     const res = await fetch(`/api/ai/decks/${leader.id}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ preference: preference.trim() || undefined }),
+      body: JSON.stringify({ selectedStyle, selectedTags }),
     });
 
     if (!res.ok) {
@@ -60,6 +112,16 @@ export function AiDeckProposer({ leader, pool }: AiDeckProposerProps) {
     }
     const data = (await res.json()) as ProposalResponse;
     setProposal(data);
+  }
+
+  function toggleTag(tag: FeatureTag) {
+    setSelectedTags((current) => {
+      if (current.includes(tag)) {
+        return current.filter((candidate) => candidate !== tag);
+      }
+      if (current.length >= MAX_FEATURE_TAGS) return current;
+      return [...current, tag];
+    });
   }
 
   function applyProposal() {
@@ -78,25 +140,104 @@ export function AiDeckProposer({ leader, pool }: AiDeckProposerProps) {
       <CardContent className="space-y-3 p-4">
         <div className="flex items-baseline justify-between">
           <h3 className="font-display text-sm tracking-wide">
-            AI に提案させる
+            Deck Intelligence Builder
           </h3>
           <span className="text-muted-foreground text-[10px] tracking-widest uppercase">
             Phase 4 · Opus
           </span>
         </div>
 
-        <div className="flex gap-2">
-          <Input
-            value={preference}
-            onChange={(e) => setPreference(e.target.value)}
-            placeholder="任意: 速攻寄り / 防御重視 / 対 OP01-001 等"
-            maxLength={200}
-            className="text-xs"
-          />
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <label className="text-muted-foreground text-[10px] tracking-widest uppercase">
+              Main Style · 1つ
+            </label>
+            <Select
+              value={selectedStyle}
+              onValueChange={(value) => setSelectedStyle(value as MainStyle)}
+            >
+              <SelectTrigger className="w-full text-xs" aria-label="Main Style">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {MAIN_STYLE_IDS.map((style) => (
+                  <SelectItem key={style} value={style}>
+                    {MAIN_STYLE_LABELS[style]} {renderStars(aptitudeByStyle.get(style)?.stars)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <div
+              className="border-border/30 bg-background/30 mt-2 grid grid-cols-2 gap-x-3 gap-y-1 rounded-md border p-2"
+              aria-label="Leader Style Aptitude"
+            >
+              {MAIN_STYLE_IDS.filter((style) => style !== "auto").map((style) => {
+                const aptitude = aptitudeByStyle.get(style);
+                return (
+                  <div
+                    key={style}
+                    className="flex items-center justify-between gap-2 text-[10px]"
+                  >
+                    <span>{MAIN_STYLE_LABELS[style]}</span>
+                    <span
+                      className={cn(
+                        "font-mono tracking-tight",
+                        aptitude && aptitude.stars <= 2
+                          ? "text-muted-foreground"
+                          : "text-primary",
+                      )}
+                    >
+                      {renderStars(aptitude?.stars)}
+                      {aptitude && aptitude.stars <= 2 ? " 相性低め" : ""}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="text-muted-foreground text-[10px]">
+              Leader効果・特徴・legal pool・support availabilityからsystemが算出。
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-muted-foreground text-[10px] tracking-widest uppercase">
+                Feature Tags · 0〜3個
+              </span>
+              <span className="text-muted-foreground font-mono text-[10px]">
+                {selectedTags.length}/{MAX_FEATURE_TAGS}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {FEATURE_TAG_IDS.map((tag) => {
+                const selected = selectedTags.includes(tag);
+                const disabled =
+                  !selected && selectedTags.length >= MAX_FEATURE_TAGS;
+                return (
+                  <Button
+                    key={tag}
+                    type="button"
+                    size="xs"
+                    variant={selected ? "secondary" : "outline"}
+                    aria-pressed={selected}
+                    disabled={disabled || pending}
+                    onClick={() => toggleTag(tag)}
+                  >
+                    {FEATURE_TAG_LABELS[tag]}
+                  </Button>
+                );
+              })}
+            </div>
+            <p className="text-muted-foreground text-[10px] leading-relaxed">
+              Main Styleを主軸に、タグは候補順位へ補助的に加点します。
+            </p>
+          </div>
+
           <Button
             onClick={() => startTransition(fetchProposal)}
             disabled={pending}
             size="sm"
+            className="w-full"
           >
             {pending ? "生成中…" : "提案"}
           </Button>
@@ -127,14 +268,67 @@ export function AiDeckProposer({ leader, pool }: AiDeckProposerProps) {
                 <div className="text-foreground font-display text-base font-semibold">
                   {proposal.archetypeName}
                 </div>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  <Badge variant="secondary" className="text-[9px]">
+                    {MAIN_STYLE_LABELS[proposal.selectedStyle]}
+                  </Badge>
+                  {proposal.selectedStyle === "auto" ? (
+                    <Badge variant="outline" className="text-[9px]">
+                      採用軸: {MAIN_STYLE_LABELS[proposal.effectiveStyle]}
+                    </Badge>
+                  ) : null}
+                  {proposal.selectedTags.map((tag) => (
+                    <Badge key={tag} variant="outline" className="text-[9px]">
+                      {FEATURE_TAG_LABELS[tag]}
+                    </Badge>
+                  ))}
+                </div>
               </div>
               <Button onClick={applyProposal} size="sm" variant="outline">
                 下書きに反映
               </Button>
             </div>
 
+            <Section label="デッキコンセプト">
+              <p>{proposal.deckConceptJa}</p>
+            </Section>
+
+            <Section label="Leader Style Aptitude 理由">
+              <p>{proposal.styleAptitudeReasonJa}</p>
+            </Section>
+
             <Section label="勝ち筋">
               <p>{proposal.winCondition}</p>
+            </Section>
+
+            <Section label="キーカード">
+              <div className="flex flex-wrap gap-1">
+                {proposal.keyCards.map((cardId) => (
+                  <Badge key={cardId} variant="outline" className="text-[9px]">
+                    {poolById.get(cardId)?.name ?? cardId}
+                  </Badge>
+                ))}
+              </div>
+            </Section>
+
+            {proposal.majorCombos.length > 0 ? (
+              <Section label="主要コンボ">
+                <ul className="space-y-1.5">
+                  {proposal.majorCombos.map((combo, index) => (
+                    <li key={`${combo.titleJa}-${index}`}>
+                      <strong>{combo.titleJa}</strong>
+                      <span className="text-muted-foreground ml-1 font-mono text-[9px]">
+                        {combo.cardIds.join(" + ")}
+                      </span>
+                      <p>{combo.explanationJa}</p>
+                    </li>
+                  ))}
+                </ul>
+              </Section>
+            ) : null}
+
+            <Section label="コストカーブ方針">
+              <p>{proposal.curveExplanationJa}</p>
             </Section>
 
             <div className="grid grid-cols-2 gap-3">
@@ -158,7 +352,7 @@ export function AiDeckProposer({ leader, pool }: AiDeckProposerProps) {
             ) : null}
 
             <Section label={`提案デッキ (${proposal.cards.length} 種 / ${proposal.cards.reduce((a, b) => a + b.count, 0)} 枚)`}>
-              <ul className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+              <ul className="grid gap-1.5 sm:grid-cols-2">
                 {proposal.cards.map((c) => {
                   const card = poolById.get(c.cardId);
                   return (
@@ -187,11 +381,38 @@ export function AiDeckProposer({ leader, pool }: AiDeckProposerProps) {
                         {card ? (
                           <div className="truncate text-[10px]">{card.name}</div>
                         ) : null}
+                        <div className="text-primary text-[9px]">{c.roleJa}</div>
+                        <p className="text-muted-foreground mt-0.5 text-[9px] leading-snug">
+                          {c.selectionReasonJa}
+                        </p>
                       </div>
                     </li>
                   );
                 })}
               </ul>
+            </Section>
+
+            <Section label="Deterministic Metrics">
+              <div className="grid grid-cols-2 gap-2">
+                <MetricList title="Cost Curve" values={proposal.metrics.costCurve} />
+                <MetricList
+                  title="Counter"
+                  values={proposal.metrics.counterDistribution}
+                />
+              </div>
+              <p className="mt-1">
+                Trigger ratio: {(proposal.metrics.triggerRatio * 100).toFixed(1)}%
+              </p>
+              <p className="mt-1">
+                Evaluation: {Object.entries(proposal.metrics.evaluationScores)
+                  .map(([key, value]) => `${key} ${value}`)
+                  .join(" / ")}
+              </p>
+              <p className="mt-1">
+                Major mechanics: {proposal.metrics.majorMechanics
+                  .map(({ mechanic, count }) => `${mechanic}×${count}`)
+                  .join(" / ") || "なし"}
+              </p>
             </Section>
 
             {proposal.warnings.length > 0 ? (
@@ -230,4 +451,28 @@ function Bullets({ items }: { items: string[] }) {
       ))}
     </ul>
   );
+}
+
+function MetricList({
+  title,
+  values,
+}: {
+  title: string;
+  values: Record<string, number>;
+}) {
+  return (
+    <div>
+      <strong className="text-[10px]">{title}</strong>
+      <p className="text-muted-foreground font-mono text-[9px]">
+        {Object.entries(values)
+          .map(([key, value]) => `${key}:${value}`)
+          .join(" / ")}
+      </p>
+    </div>
+  );
+}
+
+function renderStars(stars: number | undefined): string {
+  if (!stars) return "☆☆☆☆☆";
+  return `${"★".repeat(stars)}${"☆".repeat(5 - stars)}`;
 }

@@ -102,6 +102,10 @@ test("Card Coach verified fact reader ignores unverified/manual card text", asyn
     ]);
 
     assert.equal(facts.get("OP01-001")?.name, "モンキー・D・ルフィ");
+    assert.equal(
+      facts.get("OP01-001")?.effectText,
+      "[アタック時] このリーダーにDON!!を付与する。",
+    );
     assert.equal(facts.has("OP01-013"), false);
   } finally {
     await cleanup(ctx);
@@ -300,7 +304,7 @@ async function seedCards(database: Database): Promise<void> {
       effectText: "手入力の未確認テキスト。",
       triggerText: null,
       source: "manual",
-      verified: false,
+      verified: true,
     },
   ]);
 }

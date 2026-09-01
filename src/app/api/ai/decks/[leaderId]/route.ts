@@ -1,7 +1,7 @@
 /**
  * POST /api/ai/decks/[leaderId]
  *
- * Body: { preference?: string }
+ * Body: { selectedStyle: MainStyle, selectedTags: FeatureTag[] }
  * Returns: DeckSuggestion JSON
  *
  * Hits Claude (Opus, tool-use) and validates the output against the
@@ -13,16 +13,39 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { proposeDeck, DeckSuggestionError } from "@/ai/deck-suggestion";
+import {
+  proposeDeck,
+  DeckSuggestionError,
+  isVerifiedOfficialDeckFact,
+} from "@/ai/deck-suggestion";
 import { MissingApiKeyError } from "@/ai/client";
+import { db } from "@/db";
 import { getCard, listCards } from "@/lib/cards";
+import { readVerifiedCardFactsByIdsFromDb } from "@/lib/card-coach-storage";
+import {
+  FEATURE_TAG_IDS,
+  MAIN_STYLE_IDS,
+  MAX_FEATURE_TAGS,
+} from "@/lib/deck-intelligence-preferences";
+import {
+  activeRegulations,
+  DeckRegulationsUnavailableError,
+} from "@/lib/saved-decks";
+import { readAiSynergiesForLeader } from "@/lib/synergy-data";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const bodySchema = z.object({
-  preference: z.string().max(200).optional(),
-});
+  selectedStyle: z.enum(MAIN_STYLE_IDS).default("auto"),
+  selectedTags: z
+    .array(z.enum(FEATURE_TAG_IDS))
+    .max(MAX_FEATURE_TAGS)
+    .refine((tags) => new Set(tags).size === tags.length, {
+      message: "selectedTags cannot contain duplicates.",
+    })
+    .default([]),
+}).strict();
 
 interface RouteContext {
   params: Promise<{ leaderId: string }>;
@@ -49,15 +72,54 @@ export async function POST(req: Request, { params }: RouteContext) {
       { status: 404 },
     );
   }
+  let pool: Awaited<ReturnType<typeof listCards>>;
+  let regulations: Awaited<ReturnType<typeof activeRegulations>>;
+  try {
+    // Pull a generous verified pool. buildCandidatePool applies the selected
+    // style/tag ranking before its deterministic prompt-size cap.
+    [pool, regulations] = await Promise.all([
+      listCards({}, 5000),
+      activeRegulations(),
+    ]);
+  } catch (err) {
+    if (err instanceof DeckRegulationsUnavailableError) {
+      return NextResponse.json(
+        {
+          error: "restrictions_unavailable",
+          detail: "Active restrictions could not be loaded; proposal stopped.",
+        },
+        { status: 503 },
+      );
+    }
+    throw err;
+  }
 
-  // Pull a generous pool — buildCandidatePool will compress further.
-  const pool = await listCards({}, 5000);
+  const [verifiedFacts, persistedSynergies] = await Promise.all([
+    readVerifiedCardFactsByIdsFromDb(
+      db,
+      [leaderId, ...pool.cards.map((card) => card.id)],
+    ),
+    readAiSynergiesForLeader(leaderId),
+  ]);
+  const verifiedLeader = verifiedFacts.get(leaderId);
+  if (!verifiedLeader || !isVerifiedOfficialDeckFact(verifiedLeader)) {
+    return NextResponse.json(
+      {
+        error: "unverified_leader",
+        detail: `${leaderId} does not have verified official facts.`,
+      },
+      { status: 409 },
+    );
+  }
 
   try {
     const suggestion = await proposeDeck({
-      leader,
-      pool: pool.cards,
-      preference: body.preference,
+      leader: verifiedLeader,
+      pool: [...verifiedFacts.values()],
+      selectedStyle: body.selectedStyle,
+      selectedTags: body.selectedTags,
+      regulations,
+      persistedSynergies,
     });
     return NextResponse.json(suggestion);
   } catch (err) {

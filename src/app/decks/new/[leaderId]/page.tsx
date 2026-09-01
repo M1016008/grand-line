@@ -6,6 +6,7 @@ import { DeckBuilder } from "@/components/grand-line/deck-builder";
 import { MockBanner } from "@/components/grand-line/mock-banner";
 import { Button } from "@/components/ui/button";
 import { getActiveRestrictions, getCard, listCards } from "@/lib/cards";
+import { calculateLeaderStyleAptitudes } from "@/lib/deck-intelligence-preferences";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +37,11 @@ export default async function DeckBuilderPage({ params }: PageProps) {
   // Maps don't survive the server → client component prop boundary in Next,
   // so flatten to plain arrays/objects.
   const restrictionRecord = Object.fromEntries(restrictions.perCardMax);
+  const styleAptitudes = calculateLeaderStyleAptitudes(
+    leader,
+    pool.cards,
+    restrictions,
+  );
 
   return (
     <>
@@ -63,6 +69,7 @@ export default async function DeckBuilderPage({ params }: PageProps) {
           usingMock={pool.usingMock}
           perCardMax={restrictionRecord}
           pairBans={restrictions.pairBans}
+          styleAptitudes={styleAptitudes}
         />
       </main>
     </>
