@@ -87,8 +87,16 @@ test("compare UI renders three profile cards, details, and draft apply actions",
   assert.match(component, /詳しく比較/);
   assert.match(component, /指標/);
   assert.match(component, /VARIANT_PROFILE_FOCUS_LABELS\[profile\]/);
+  assert.match(component, /VARIANT_PERSONALITY_JA\[profile\]/);
+  assert.match(component, /構築の性格/);
+  assert.match(component, /構築思想/);
+  assert.match(component, /この案だけの採用カード/);
+  assert.match(component, /cardComparison\.uniqueCardIds/);
+  assert.match(component, /枚数を増やした主なカード/);
+  assert.match(component, /高い数値が構築の優劣を決めるものではありません/);
   assert.match(component, /この構築を下書きに反映/);
   assert.match(component, /onClick=\{\(\) => onApply\(variant\)\}/);
   assert.match(component, /replace\(resolveDeckCopyEntries\(target\.cards, poolById\)\)/);
+  assert.doesNotMatch(component, /metrics\.composite|label: "Composite"/);
   assert.doesNotMatch(component, /絶対おすすめ|最強/);
 });

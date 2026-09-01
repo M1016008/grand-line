@@ -31,6 +31,7 @@ import {
   type FeatureTag,
   type LeaderStyleAptitude,
   type MainStyle,
+  type VariantProfile,
 } from "@/lib/deck-intelligence-preferences";
 import {
   DECK_INTELLIGENCE_GENERATION_MODES,
@@ -52,6 +53,15 @@ interface ApiError {
   detail?: string;
   attempts?: number;
 }
+
+const VARIANT_PERSONALITY_JA: Record<VariantProfile, string> = {
+  recommended:
+    "Leaderとの相性と選択したMain Styleを軸に、Feature Tagsを自然に取り入れる標準案です。",
+  consistency:
+    "同じMain Styleを保ちながら、サーチ・アクセスしやすい中核札・カウンター・コスト帯の安定を厚くする案です。",
+  specialization:
+    "同じMain Styleを保ちながら、選択したFeature Tagsの動きを推奨構築より一段はっきり出す案です。",
+};
 
 export function AiDeckProposer({
   leader,
@@ -496,6 +506,10 @@ function DeckVariantsView({
           const variant = byProfile.get(profile);
           if (!variant) return null;
           const metrics = response.comparison.metricsByVariant[profile];
+          const cardComparison = response.comparison.cardsByVariant[profile];
+          const uniqueCards = cardComparison.uniqueCardIds
+            .slice(0, 5)
+            .map((cardId) => poolById.get(cardId)?.name ?? cardId);
           return (
             <Card key={profile} className="border-border/50 bg-background/35">
               <CardContent className="flex h-full flex-col gap-2 p-3">
@@ -518,13 +532,28 @@ function DeckVariantsView({
                   </div>
                 </div>
 
-                <Section label="Deck Concept">
+                <Section label="構築の性格">
+                  <p>{VARIANT_PERSONALITY_JA[profile]}</p>
+                </Section>
+                <Section label="構築思想">
                   <p>{variant.deckConceptJa}</p>
                 </Section>
-                <Section label="Variant Reason">
+                <Section label="この案だけの採用カード">
+                  <p>
+                    {uniqueCards.join(" / ") ||
+                      "単独採用なし（採用枚数の配分で性格を分けています）"}
+                  </p>
+                  <p className="text-muted-foreground mt-1 text-[9px]">
+                    枚数を増やした主なカード: {formatDeltas(
+                      cardComparison.increasedCards,
+                      poolById,
+                    )}
+                  </p>
+                </Section>
+                <Section label="この案を選ぶ理由">
                   <p>{variant.variantReasonJa}</p>
                 </Section>
-                <Section label="Key Cards">
+                <Section label="主なキーカード">
                   <div className="flex flex-wrap gap-1">
                     {variant.keyCards.slice(0, 5).map((cardId) => (
                       <Badge key={cardId} variant="outline" className="text-[9px]">
@@ -534,11 +563,16 @@ function DeckVariantsView({
                   </div>
                 </Section>
 
-                <div className="border-border/30 grid grid-cols-2 gap-1 border-y py-2 font-mono text-[9px]">
-                  <span>Attack {metrics.attack}</span>
-                  <span>Stability {metrics.stability}</span>
-                  <span>Composite {metrics.composite}</span>
-                  <span>Trigger {(metrics.triggerRatio * 100).toFixed(1)}%</span>
+                <div className="border-border/30 border-y py-2">
+                  <div className="text-muted-foreground mb-1 text-[9px]">
+                    プレイ傾向（優劣ではなく性格の比較）
+                  </div>
+                  <div className="grid grid-cols-2 gap-1 font-mono text-[9px]">
+                    <span>Attack {metrics.attack}</span>
+                    <span>Stability {metrics.stability}</span>
+                    <span>Expansion {metrics.expansion}</span>
+                    <span>Defense {metrics.defense}</span>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
@@ -595,7 +629,6 @@ function DetailedVariantComparison({
     { label: "Expansion", render: (summary) => String(summary.expansion) },
     { label: "Defense", render: (summary) => String(summary.defense) },
     { label: "Meta", render: (summary) => String(summary.meta) },
-    { label: "Composite", render: (summary) => String(summary.composite) },
     {
       label: "Trigger ratio",
       render: (summary) => `${(summary.triggerRatio * 100).toFixed(1)}%`,
@@ -614,6 +647,9 @@ function DetailedVariantComparison({
 
   return (
     <div className="border-border/40 bg-background/30 space-y-3 rounded-md border p-3">
+      <p className="text-muted-foreground text-[10px]">
+        各数値は3案の性格差を見るための指標です。高い数値が構築の優劣を決めるものではありません。
+      </p>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[620px] border-collapse text-left text-[10px]">
           <thead>
