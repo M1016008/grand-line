@@ -42,6 +42,7 @@ interface DeckOptimizerProps {
   variantCards: Record<VariantProfile, DeckCopyEntry[]>;
   opponent: BenchmarkOpponentDescriptor;
   cpuSkill: CpuSkill;
+  maxTurns: number;
   onApplyCandidate: (
     profile: VariantProfile,
     candidate: DeckOptimizerCandidate,
@@ -61,6 +62,7 @@ export function DeckOptimizer({
   variantCards,
   opponent,
   cpuSkill,
+  maxTurns,
   onApplyCandidate,
   onRebenchmark,
 }: DeckOptimizerProps) {
@@ -99,6 +101,7 @@ export function DeckOptimizer({
           selectedTags: response.selectedTags,
           opponent,
           cpuSkill,
+          maxTurns,
           optimizerGames,
           candidateLimit,
         }),

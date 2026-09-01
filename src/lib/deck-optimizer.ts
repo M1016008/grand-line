@@ -1,6 +1,7 @@
 import type { CardListItem } from "@/lib/cards";
 import {
   BENCHMARK_SEED_STEP,
+  BENCHMARK_SERVER_MAX_TURNS,
   BenchmarkDeckValidationError,
   buildPairedBenchmarkSchedule,
   runDeckOnBenchmarkSchedule,
@@ -163,6 +164,7 @@ export interface DeckOptimizerInput {
   opponentDeck: PracticeDeck;
   opponent: BenchmarkOpponentDescriptor;
   cpuSkill: CpuSkill;
+  maxTurns: number;
   optimizerGames: OptimizerGames;
   candidateLimit: number;
 }
@@ -224,6 +226,7 @@ export function runDeckOptimizer(
 
   const schedule = buildPairedBenchmarkSchedule(input.optimizerGames, {
     cpuSkill: input.cpuSkill,
+    maxTurns: input.maxTurns,
   });
   const baselineRun = runDeckOnBenchmarkSchedule(
     {
@@ -420,6 +423,16 @@ function validateOptimizerBounds(input: DeckOptimizerInput): void {
   ) {
     throw new DeckOptimizerError(
       `candidateLimit must be between 1 and ${OPTIMIZER_MAX_CANDIDATE_LIMIT}.`,
+      "invalid_optimizer_request",
+    );
+  }
+  if (
+    !Number.isInteger(input.maxTurns) ||
+    input.maxTurns < 1 ||
+    input.maxTurns > BENCHMARK_SERVER_MAX_TURNS
+  ) {
+    throw new DeckOptimizerError(
+      `maxTurns must be between 1 and ${BENCHMARK_SERVER_MAX_TURNS}.`,
       "invalid_optimizer_request",
     );
   }

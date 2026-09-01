@@ -6,7 +6,10 @@ import {
   resolveBenchmarkOpponent,
 } from "@/lib/benchmark-opponent";
 import { listCards } from "@/lib/cards";
-import { BenchmarkDeckValidationError } from "@/lib/deck-battle-benchmark";
+import {
+  BENCHMARK_SERVER_MAX_TURNS,
+  BenchmarkDeckValidationError,
+} from "@/lib/deck-battle-benchmark";
 import { DeckCopyResolutionError } from "@/lib/deck-intelligence-compare";
 import {
   FEATURE_TAG_IDS,
@@ -67,6 +70,7 @@ const bodySchema = z.object({
     }),
   opponent: opponentDescriptorSchema,
   cpuSkill: z.enum(CPU_LEVEL_VALUES),
+  maxTurns: z.number().int().min(1).max(BENCHMARK_SERVER_MAX_TURNS),
   optimizerGames: z.union([z.literal(100), z.literal(300), z.literal(500)]),
   candidateLimit: z.number().int().min(1).max(OPTIMIZER_MAX_CANDIDATE_LIMIT),
 }).strict();
@@ -129,6 +133,7 @@ export async function POST(request: Request) {
       opponentDeck: opponent.deck,
       opponent: opponent.descriptor,
       cpuSkill: body.cpuSkill,
+      maxTurns: body.maxTurns,
       optimizerGames: body.optimizerGames,
       candidateLimit: body.candidateLimit,
     });

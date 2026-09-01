@@ -35,6 +35,7 @@ export const BENCHMARK_SIZE_OPTIONS = [
 ] as const;
 
 export const BENCHMARK_SERVER_MAX_GAMES = 10_000;
+export const BENCHMARK_SERVER_MAX_TURNS = 100;
 export const BENCHMARK_DEFAULT_BASE_SEED = 1_001;
 export const BENCHMARK_SEED_STEP = 97;
 export const BENCHMARK_DEFAULT_MAX_TURNS = 10;
@@ -252,6 +253,15 @@ export function buildPairedBenchmarkSchedule(
   const baseSeed = options.baseSeed ?? BENCHMARK_DEFAULT_BASE_SEED;
   const seedStep = options.seedStep ?? BENCHMARK_SEED_STEP;
   const maxTurns = options.maxTurns ?? BENCHMARK_DEFAULT_MAX_TURNS;
+  if (
+    !Number.isInteger(maxTurns) ||
+    maxTurns < 1 ||
+    maxTurns > BENCHMARK_SERVER_MAX_TURNS
+  ) {
+    throw new RangeError(
+      `Benchmark maxTurns must be between 1 and ${BENCHMARK_SERVER_MAX_TURNS}.`,
+    );
+  }
   return Array.from({ length: games }, (_, gameIndex) => ({
     gameIndex,
     seed: baseSeed + gameIndex * seedStep,

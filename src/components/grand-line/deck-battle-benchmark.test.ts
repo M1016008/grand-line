@@ -109,3 +109,64 @@ test("Deck Optimizer UI is explicit, paired, and manual-apply only", async () =>
   assert.match(route, /resolveBenchmarkOpponent/);
   assert.match(route, /runDeckOptimizer/);
 });
+
+test("optimizer uses the completed benchmark CPU snapshot, not selector state", async () => {
+  const component = await source(
+    "src",
+    "components",
+    "grand-line",
+    "deck-battle-benchmark.tsx",
+  );
+  const optimizerInvocation = component.match(/<DeckOptimizer[\s\S]*?\/>/)?.[0];
+
+  assert.ok(optimizerInvocation);
+  assert.match(
+    optimizerInvocation,
+    /cpuSkill=\{result\.benchmark\.schedule\.cpuSkill\}/,
+  );
+  assert.doesNotMatch(optimizerInvocation, /cpuSkill=\{cpuSkill\}/);
+});
+
+test("optimizer uses the completed benchmark opponent descriptor", async () => {
+  const component = await source(
+    "src",
+    "components",
+    "grand-line",
+    "deck-battle-benchmark.tsx",
+  );
+
+  assert.match(component, /opponent=\{result\.benchmark\.opponent\}/);
+});
+
+test("the same benchmark condition snapshot is passed through to optimizer", async () => {
+  const benchmarkComponent = await source(
+    "src",
+    "components",
+    "grand-line",
+    "deck-battle-benchmark.tsx",
+  );
+  const optimizerComponent = await source(
+    "src",
+    "components",
+    "grand-line",
+    "deck-optimizer.tsx",
+  );
+  const route = await source(
+    "src",
+    "app",
+    "api",
+    "practice",
+    "optimizer",
+    "route.ts",
+  );
+
+  assert.match(
+    benchmarkComponent,
+    /maxTurns=\{result\.benchmark\.schedule\.maxTurns\}/,
+  );
+  assert.match(optimizerComponent, /opponent,[\s\S]*cpuSkill,[\s\S]*maxTurns,/);
+  assert.match(
+    route,
+    /cpuSkill: body\.cpuSkill,[\s\S]*maxTurns: body\.maxTurns/,
+  );
+});

@@ -293,7 +293,8 @@ export function DeckBattleBenchmark({
             pool={pool}
             variantCards={variantCards}
             opponent={result.benchmark.opponent}
-            cpuSkill={cpuSkill}
+            cpuSkill={result.benchmark.schedule.cpuSkill}
+            maxTurns={result.benchmark.schedule.maxTurns}
             onApplyCandidate={(profile, candidate) => {
               const applied = onApplyCards(candidate.resultingDeck.cards);
               if (!applied) return false;

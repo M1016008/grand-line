@@ -322,6 +322,7 @@ function optimizerInput(
       synthetic: true,
     },
     cpuSkill: "level3",
+    maxTurns: 10,
     optimizerGames: 100,
     candidateLimit: 8,
     ...overrides,
