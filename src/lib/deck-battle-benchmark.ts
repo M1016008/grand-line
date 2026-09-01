@@ -20,6 +20,7 @@ import type {
   WinReason,
 } from "@/lib/practice-log";
 import {
+  cardPriority,
   simulateMatch,
   summarizePracticeMatches,
   type Contribution,
@@ -48,6 +49,7 @@ export interface StrictPracticeDeckInput {
   cards: DeckCopyEntry[];
   poolById: ReadonlyMap<string, CardListItem>;
   regulations: DeckRegulations;
+  source?: PracticeDeck["source"];
 }
 
 export class BenchmarkDeckValidationError extends Error {
@@ -120,9 +122,108 @@ export function strictDeckIntelligencePracticeDeck(
     name: input.name,
     leader: input.leader,
     entries,
-    source: "draft",
+    source: input.source ?? "draft",
     totalCards: report.totalCount,
   };
+}
+
+export interface StrictSyntheticOpponentInput {
+  leader: CardListItem;
+  pool: CardListItem[];
+  regulations: DeckRegulations;
+}
+
+/**
+ * Deterministically constructs a currently legal synthetic opponent.
+ * Unlike buildPracticeDeck, this Benchmark-only generator never falls back
+ * to off-color cards and never exceeds active copy or pair restrictions.
+ */
+export function buildStrictSyntheticBenchmarkOpponent(
+  input: StrictSyntheticOpponentInput,
+): PracticeDeck {
+  if (input.leader.cardType !== "LEADER") {
+    throw new BenchmarkDeckValidationError(
+      `${input.leader.id} is not a leader card.`,
+      [
+        {
+          code: "not_a_leader",
+          severity: "error",
+          message: `${input.leader.id} is not a leader card.`,
+          cardIds: [input.leader.id],
+        },
+      ],
+    );
+  }
+
+  const leaderColors = new Set(input.leader.colors);
+  const pairPartners = new Map<string, Set<string>>();
+  for (const pair of input.regulations.pairBans ?? []) {
+    addPairPartner(pairPartners, pair.cardIdA, pair.cardIdB);
+    addPairPartner(pairPartners, pair.cardIdB, pair.cardIdA);
+  }
+  const forbiddenByLeader = pairPartners.get(input.leader.id) ?? new Set();
+  const perCardMax = input.regulations.perCardMax ?? new Map<string, number>();
+  const uniquePool = new Map(input.pool.map((card) => [card.id, card]));
+  const candidates = [...uniquePool.values()]
+    .filter((card) =>
+      card.cardType === "CHARACTER" ||
+      card.cardType === "EVENT" ||
+      card.cardType === "STAGE",
+    )
+    .filter((card) =>
+      card.colors.some((color) => leaderColors.has(color)),
+    )
+    .filter((card) => !forbiddenByLeader.has(card.id))
+    .map((card) => ({
+      card,
+      maxCopies: Math.min(4, perCardMax.get(card.id) ?? 4),
+    }))
+    .filter((candidate) => candidate.maxCopies > 0)
+    .sort(
+      (left, right) =>
+        cardPriority(right.card, input.leader) -
+          cardPriority(left.card, input.leader) ||
+        left.card.id.localeCompare(right.card.id),
+    );
+
+  const selectedIds = new Set<string>();
+  const cards: DeckCopyEntry[] = [];
+  let totalCards = 0;
+  for (const candidate of candidates) {
+    if (totalCards === 50) break;
+    const partners = pairPartners.get(candidate.card.id);
+    if (partners && [...partners].some((partner) => selectedIds.has(partner))) {
+      continue;
+    }
+    const count = Math.min(candidate.maxCopies, 50 - totalCards);
+    if (count < 1) continue;
+    cards.push({ cardId: candidate.card.id, count });
+    selectedIds.add(candidate.card.id);
+    totalCards += count;
+  }
+
+  if (totalCards !== 50) {
+    throw new BenchmarkDeckValidationError(
+      `A legal 50-card Synthetic benchmark opponent could not be built for ${input.leader.id}; only ${totalCards} legal copies were available.`,
+      [
+        {
+          code: "synthetic_opponent_unavailable",
+          severity: "error",
+          message: `現在のactive restrictionsとLeader色では合法な50枚を構築できません（${totalCards}枚）。`,
+        },
+      ],
+    );
+  }
+
+  return strictDeckIntelligencePracticeDeck({
+    id: `synthetic:${input.leader.id}`,
+    name: `Synthetic benchmark opponent — ${input.leader.name}`,
+    leader: input.leader,
+    cards,
+    poolById: uniquePool,
+    regulations: input.regulations,
+    source: "generated",
+  });
 }
 
 export interface BenchmarkScheduleEntry {
@@ -467,6 +568,16 @@ function assertThreeProfiles(variants: BenchmarkVariantInput[]): void {
       "Paired benchmark requires exactly one recommended, consistency, and specialization deck.",
     );
   }
+}
+
+function addPairPartner(
+  pairPartners: Map<string, Set<string>>,
+  cardId: string,
+  partnerId: string,
+): void {
+  const partners = pairPartners.get(cardId) ?? new Set<string>();
+  partners.add(partnerId);
+  pairPartners.set(cardId, partners);
 }
 
 function emptyOutcomeMap(): Record<VariantProfile, boolean[]> {

@@ -6,6 +6,7 @@ import {
   aggregatePairedOutcomes,
   BenchmarkDeckValidationError,
   buildPairedBenchmarkSchedule,
+  buildStrictSyntheticBenchmarkOpponent,
   runPairedDeckBenchmark,
   strictDeckIntelligencePracticeDeck,
   wilson95Interval,
@@ -14,6 +15,7 @@ import { DeckCopyResolutionError } from "@/lib/deck-intelligence-compare";
 import type { VariantProfile } from "@/lib/deck-intelligence-preferences";
 import type { GameEvent, ReplayStateSnapshot } from "@/lib/practice-log";
 import {
+  buildPracticeDeck,
   simulateBatch,
   simulateMatch,
   type MatchResult,
@@ -28,6 +30,9 @@ const COPY_ENTRIES = DECK_CARDS.map((deckCard, index) => ({
   cardId: deckCard.id,
   count: index === 12 ? 2 : 4,
 }));
+const SYNTHETIC_CARDS = Array.from({ length: 16 }, (_, index) =>
+  card(`S-${String(index).padStart(2, "0")}`, "CHARACTER", index),
+);
 
 test("strict 50-card PracticeDeck adapter preserves leader and exact counts", () => {
   const deck = strictDeckIntelligencePracticeDeck({
@@ -101,6 +106,108 @@ test("saved opponent conversion fails when an active restriction is violated", (
       error instanceof BenchmarkDeckValidationError &&
       error.violations.some((violation) => violation.code === "banned_card"),
   );
+});
+
+test("synthetic opponent excludes banned card", () => {
+  const baseline = buildStrictSyntheticBenchmarkOpponent({
+    leader: LEADER,
+    pool: SYNTHETIC_CARDS,
+    regulations: {},
+  });
+  const bannedId = baseline.entries[0].card.id;
+  const deck = buildStrictSyntheticBenchmarkOpponent({
+    leader: LEADER,
+    pool: SYNTHETIC_CARDS,
+    regulations: { perCardMax: new Map([[bannedId, 0]]) },
+  });
+
+  assert.equal(deck.totalCards, 50);
+  assert.equal(deck.entries.some((entry) => entry.card.id === bannedId), false);
+});
+
+test("synthetic opponent respects reduced copy limit", () => {
+  const baseline = buildStrictSyntheticBenchmarkOpponent({
+    leader: LEADER,
+    pool: SYNTHETIC_CARDS,
+    regulations: {},
+  });
+  const restrictedId = baseline.entries[0].card.id;
+  const deck = buildStrictSyntheticBenchmarkOpponent({
+    leader: LEADER,
+    pool: SYNTHETIC_CARDS,
+    regulations: { perCardMax: new Map([[restrictedId, 1]]) },
+  });
+
+  assert.equal(deck.totalCards, 50);
+  assert.ok(
+    (deck.entries.find((entry) => entry.card.id === restrictedId)?.count ?? 0) <= 1,
+  );
+});
+
+test("synthetic opponent respects pair bans", () => {
+  const baseline = buildStrictSyntheticBenchmarkOpponent({
+    leader: LEADER,
+    pool: SYNTHETIC_CARDS,
+    regulations: {},
+  });
+  const [cardIdA, cardIdB] = baseline.entries.slice(0, 2).map((entry) => entry.card.id);
+  const deck = buildStrictSyntheticBenchmarkOpponent({
+    leader: LEADER,
+    pool: SYNTHETIC_CARDS,
+    regulations: { pairBans: [{ cardIdA, cardIdB }] },
+  });
+  const selected = new Set(deck.entries.map((entry) => entry.card.id));
+
+  assert.equal(deck.totalCards, 50);
+  assert.equal(selected.has(cardIdA) && selected.has(cardIdB), false);
+});
+
+test("synthetic opponent is exactly 50 and color-legal", () => {
+  const offColor = { ...card("B-001", "CHARACTER", 0), colors: ["blue"] };
+  const deck = buildStrictSyntheticBenchmarkOpponent({
+    leader: LEADER,
+    pool: [...SYNTHETIC_CARDS, offColor],
+    regulations: {},
+  });
+  const leaderColors = new Set(LEADER.colors);
+
+  assert.equal(deck.source, "generated");
+  assert.equal(deck.totalCards, 50);
+  assert.equal(
+    deck.entries.reduce((total, entry) => total + entry.count, 0),
+    50,
+  );
+  assert.ok(deck.entries.every((entry) => entry.count <= 4));
+  assert.ok(
+    deck.entries.every((entry) =>
+      entry.card.colors.some((color) => leaderColors.has(color)),
+    ),
+  );
+  assert.equal(deck.entries.some((entry) => entry.card.id === offColor.id), false);
+});
+
+test("impossible legal synthetic construction fails closed", () => {
+  assert.throws(
+    () =>
+      buildStrictSyntheticBenchmarkOpponent({
+        leader: LEADER,
+        pool: SYNTHETIC_CARDS.slice(0, 12),
+        regulations: {},
+      }),
+    (error) =>
+      error instanceof BenchmarkDeckValidationError &&
+      error.violations.some(
+        (violation) => violation.code === "synthetic_opponent_unavailable",
+      ),
+  );
+});
+
+test("existing buildPracticeDeck keeps its Practice Lab fallback behavior", () => {
+  const offColor = { ...card("B-ONLY", "CHARACTER", 0), colors: ["blue"] };
+  const deck = buildPracticeDeck(LEADER, [offColor]);
+
+  assert.equal(deck.totalCards, 50);
+  assert.deepEqual(deck.entries, [{ card: offColor, count: 50 }]);
 });
 
 test("paired schedule balances first and second and is deterministic", () => {

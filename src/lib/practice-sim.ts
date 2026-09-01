@@ -1124,7 +1124,7 @@ function removeOne(cards: CardListItem[], id: string): CardListItem[] {
   return next;
 }
 
-function cardPriority(card: CardListItem, leader: CardListItem): number {
+export function cardPriority(card: CardListItem, leader: CardListItem): number {
   const leaderFeatures = new Set(leader.features);
   const featureMatch = card.features.some((feature) => leaderFeatures.has(feature)) ? 30 : 0;
   const curve = card.cost === null ? 0 : 18 - Math.abs(card.cost - 3) * 2;

@@ -54,7 +54,8 @@ test("benchmark route resolves facts once and revalidates saved opponents", asyn
   assert.match(route, /activeRegulations\(\)/);
   assert.match(route, /getSavedDeck/);
   assert.match(route, /strictDeckIntelligencePracticeDeck/);
-  assert.match(route, /buildPracticeDeck\(syntheticLeader, pool\)/);
+  assert.match(route, /buildStrictSyntheticBenchmarkOpponent/);
+  assert.doesNotMatch(route, /buildPracticeDeck\(syntheticLeader, pool\)/);
   assert.match(route, /restrictions_unavailable/);
   assert.match(route, /benchmark_deck_invalid/);
 });

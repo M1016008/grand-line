@@ -5,6 +5,7 @@ import { listCards } from "@/lib/cards";
 import {
   BENCHMARK_SERVER_MAX_GAMES,
   BenchmarkDeckValidationError,
+  buildStrictSyntheticBenchmarkOpponent,
   runPairedDeckBenchmark,
   strictDeckIntelligencePracticeDeck,
   type BenchmarkOpponentDescriptor,
@@ -15,7 +16,7 @@ import {
   VARIANT_PROFILE_LABELS,
 } from "@/lib/deck-intelligence-preferences";
 import { CPU_LEVEL_VALUES } from "@/lib/practice-log";
-import { buildPracticeDeck, type PracticeDeck } from "@/lib/practice-sim";
+import type { PracticeDeck } from "@/lib/practice-sim";
 import {
   activeRegulations,
   DeckRegulationsUnavailableError,
@@ -217,7 +218,11 @@ function resolveOpponent({
     );
   }
   return {
-    deck: buildPracticeDeck(syntheticLeader, pool),
+    deck: buildStrictSyntheticBenchmarkOpponent({
+      leader: syntheticLeader,
+      pool,
+      regulations,
+    }),
     descriptor: {
       kind: "synthetic",
       id: `synthetic:${syntheticLeader.id}`,
