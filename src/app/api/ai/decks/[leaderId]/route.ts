@@ -1,13 +1,11 @@
 /**
  * POST /api/ai/decks/[leaderId]
  *
- * Body: { selectedStyle: MainStyle, selectedTags: FeatureTag[] }
- * Returns: DeckSuggestion JSON
+ * Body: { mode: "single" | "compare", selectedStyle, selectedTags }
+ * Returns one DeckSuggestion (default) or a three-profile comparison.
  *
- * Hits Claude (Opus, tool-use) and validates the output against the
- * deck-rules validator before returning. Retries up to twice on rule
- * violations (the suggestion lib injects the violation feedback into
- * the conversation so the next attempt can correct).
+ * Loads the verified facts/restrictions/synergies once per request. Every
+ * Claude tool-use output is independently validated before returning.
  */
 
 import { NextResponse } from "next/server";
@@ -15,6 +13,7 @@ import { z } from "zod";
 
 import {
   proposeDeck,
+  proposeDeckVariants,
   DeckSuggestionError,
   isVerifiedOfficialDeckFact,
 } from "@/ai/deck-suggestion";
@@ -22,6 +21,7 @@ import { MissingApiKeyError } from "@/ai/client";
 import { db } from "@/db";
 import { getCard, listCards } from "@/lib/cards";
 import { readVerifiedCardFactsByIdsFromDb } from "@/lib/card-coach-storage";
+import { DECK_INTELLIGENCE_GENERATION_MODES } from "@/lib/deck-intelligence-compare";
 import {
   FEATURE_TAG_IDS,
   MAIN_STYLE_IDS,
@@ -37,6 +37,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const bodySchema = z.object({
+  mode: z.enum(DECK_INTELLIGENCE_GENERATION_MODES).default("single"),
   selectedStyle: z.enum(MAIN_STYLE_IDS).default("auto"),
   selectedTags: z
     .array(z.enum(FEATURE_TAG_IDS))
@@ -113,14 +114,18 @@ export async function POST(req: Request, { params }: RouteContext) {
   }
 
   try {
-    const suggestion = await proposeDeck({
+    const suggestionInput = {
       leader: verifiedLeader,
       pool: [...verifiedFacts.values()],
       selectedStyle: body.selectedStyle,
       selectedTags: body.selectedTags,
       regulations,
       persistedSynergies,
-    });
+    };
+    const suggestion =
+      body.mode === "compare"
+        ? await proposeDeckVariants(suggestionInput)
+        : await proposeDeck(suggestionInput);
     return NextResponse.json(suggestion);
   } catch (err) {
     if (err instanceof MissingApiKeyError) {

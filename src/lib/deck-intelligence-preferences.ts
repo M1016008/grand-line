@@ -68,6 +68,26 @@ export const FEATURE_TAG_LABELS: Record<FeatureTag, string> = {
   finisher_focus: "フィニッシャー重視",
 };
 
+export const VARIANT_PROFILE_IDS = [
+  "recommended",
+  "consistency",
+  "specialization",
+] as const;
+
+export type VariantProfile = (typeof VARIANT_PROFILE_IDS)[number];
+
+export const VARIANT_PROFILE_LABELS: Record<VariantProfile, string> = {
+  recommended: "推奨構築",
+  consistency: "安定構築",
+  specialization: "特化構築",
+};
+
+export const VARIANT_PROFILE_FOCUS_LABELS: Record<VariantProfile, string> = {
+  recommended: "推奨",
+  consistency: "安定性重視",
+  specialization: "特化度重視",
+};
+
 /**
  * Mechanic names emitted by the current extractor and observed in the real DB.
  * Empty arrays are deliberate: those tags use printed stats instead of a
@@ -95,6 +115,7 @@ export const MAX_FEATURE_TAGS = 3;
 export const MAIN_STYLE_SCORE_CAP = 14;
 export const FEATURE_TAG_SCORE_CAP = 9;
 export const RELATIONSHIP_SCORE_CAP = 12;
+export const VARIANT_PROFILE_SCORE_CAP = 5;
 
 export interface DeckPreferenceSelection {
   selectedStyle: MainStyle;
@@ -116,6 +137,7 @@ export interface DeckCandidateRankingContext {
 export interface DeckCandidateScore {
   leaderAffinity: number;
   mainStyle: number;
+  variantProfile: number;
   featureTags: number;
   relationships: number;
   total: number;
@@ -279,17 +301,25 @@ export function rankDeckCandidates(
   cards: CardListItem[],
   selection: DeckPreferenceSelection,
   context?: DeckCandidateRankingContext,
+  variantProfile: VariantProfile = "recommended",
 ): RankedDeckCandidate[] {
   return cards
     .map((card) => ({
       card,
-      score: scoreDeckCandidate(leader, card, selection, context),
+      score: scoreDeckCandidate(
+        leader,
+        card,
+        selection,
+        context,
+        variantProfile,
+      ),
     }))
     .sort(
       (a, b) =>
         b.score.total - a.score.total ||
         b.score.leaderAffinity - a.score.leaderAffinity ||
         b.score.mainStyle - a.score.mainStyle ||
+        b.score.variantProfile - a.score.variantProfile ||
         b.score.relationships - a.score.relationships ||
         b.score.featureTags - a.score.featureTags ||
         a.card.id.localeCompare(b.card.id),
@@ -301,6 +331,7 @@ export function scoreDeckCandidate(
   card: CardListItem,
   selection: DeckPreferenceSelection,
   context?: DeckCandidateRankingContext,
+  variantProfile: VariantProfile = "recommended",
 ): DeckCandidateScore {
   const sharedFeatures = countSharedFeatures(leader, card);
   const evidence = context?.evidenceByCardId.get(card.id);
@@ -319,6 +350,16 @@ export function scoreDeckCandidate(
       0,
     ),
   );
+  const profileScore = Math.min(
+    VARIANT_PROFILE_SCORE_CAP,
+    variantProfileScore(
+      card,
+      variantProfile,
+      mainStyle,
+      featureTags,
+      evidence,
+    ),
+  );
   const relationships = evidence
     ? Math.min(
         RELATIONSHIP_SCORE_CAP,
@@ -331,10 +372,50 @@ export function scoreDeckCandidate(
   return {
     leaderAffinity,
     mainStyle,
+    variantProfile: profileScore,
     featureTags,
     relationships,
-    total: leaderAffinity + mainStyle + featureTags + relationships,
+    total:
+      leaderAffinity +
+      mainStyle +
+      profileScore +
+      featureTags +
+      relationships,
   };
+}
+
+function variantProfileScore(
+  card: CardListItem,
+  profile: VariantProfile,
+  mainStyle: number,
+  featureTags: number,
+  evidence: DeckCandidateRelationshipEvidence | undefined,
+): number {
+  if (profile === "recommended") return 0;
+
+  if (profile === "consistency") {
+    const cost = card.cost ?? 99;
+    const counter = card.counter ?? 0;
+    const searchable =
+      (evidence?.searchability ?? 0) > 0 ||
+      hasAnyMechanic(card, ["Search", "Look"]);
+    const supportedCore =
+      (evidence?.leaderDirect ?? 0) > 0 &&
+      (evidence?.featureSupport ?? 0) > 0;
+    return (
+      (searchable ? 2 : 0) +
+      (supportedCore ? 1 : 0) +
+      (counter >= 2000 ? 2 : counter >= 1000 ? 1 : 0) +
+      (cost >= 2 && cost <= 5 ? 1 : 0)
+    );
+  }
+
+  // Specialization reinforces the already-selected style/tag signals, but
+  // stays within its own small cap. It never changes the style or tag cap.
+  return (
+    Math.min(3, Math.ceil(mainStyle / 4)) +
+    (featureTags >= 6 ? 2 : featureTags >= 3 ? 1 : 0)
+  );
 }
 
 /**

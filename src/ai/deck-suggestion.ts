@@ -2,8 +2,8 @@
  * Phase 4 — AI deck suggestion (Claude Opus, tool-use enforced).
  *
  * Pipeline:
- *   1. Build a leader-aware candidate pool (color filter + feature
- *      relevance + reasonable cap so the prompt stays cheap).
+ *   1. Prepare one leader-aware candidate context (verified color/legal
+ *      pool, relationship evidence, aptitude and prompt-size cap).
  *   2. Call Claude with a single `propose_deck` tool whose JSON Schema
  *      pins down everything we'll persist: archetype name, card list,
  *      win condition, strengths, weaknesses.
@@ -11,7 +11,8 @@
  *      (50 cards, 4-of, color match, no leader cards in deck).
  *   4. On rule violation, retry up to MAX_RETRIES with the violation
  *      messages echoed back as a "your previous proposal failed because
- *      …, fix and re-emit" follow-up.
+ *      …, fix and re-emit" follow-up. Compare mode reuses the same context
+ *      for three independently validated variant profiles.
  *
  * Hard rules per AGENTS.md:
  *   - Tool-use is mandatory. Free text is ignored.
@@ -44,11 +45,18 @@ import {
   recommendedMainStyle,
   resolveDeckPreferences,
   seedAnalysisPool,
+  VARIANT_PROFILE_LABELS,
   type DeckPreferenceSelection,
   type FeatureTag,
   type LeaderStyleAptitude,
   type MainStyle,
+  type VariantProfile,
 } from "@/lib/deck-intelligence-preferences";
+import {
+  buildDeckVariantsComparison,
+  orchestrateVariantProfiles,
+  type DeckVariantsComparison,
+} from "@/lib/deck-intelligence-compare";
 import type { RuleSynergy } from "@/lib/synergy-rules";
 
 const MAX_RETRIES = 2;
@@ -143,6 +151,12 @@ const PROPOSE_DECK_TOOL: Anthropic.Tool = {
           "具体的な数値を創作せず、選択したカードのコスト帯がスタイルとゲームプランをどう支えるかを説明。",
         maxLength: 320,
       },
+      variant_reason_ja: {
+        type: "string",
+        description:
+          "同じLeader/Main Style/Feature Tagsを維持したまま、このvariant profileとして採用配分を変えた理由。",
+        maxLength: 320,
+      },
       strengths: {
         type: "array",
         items: { type: "string", maxLength: 120 },
@@ -182,6 +196,7 @@ const PROPOSE_DECK_TOOL: Anthropic.Tool = {
       "key_cards",
       "major_combos",
       "curve_explanation_ja",
+      "variant_reason_ja",
       "strengths",
       "weaknesses",
       "typical_matchups",
@@ -215,6 +230,7 @@ const proposalSchema = z.object({
     }),
   ).max(6),
   curve_explanation_ja: z.string().min(1).max(320),
+  variant_reason_ja: z.string().min(1).max(320),
   strengths: z.array(z.string().max(120)).max(4),
   weaknesses: z.array(z.string().max(120)).max(4),
   typical_matchups: z.object({
@@ -291,6 +307,9 @@ export function buildPostGenerationMetrics(
 
 export interface DeckSuggestion {
   modelVersion: string;
+  variantProfile: VariantProfile;
+  variantLabel: string;
+  variantReasonJa: string;
   selectedStyle: MainStyle;
   selectedTags: FeatureTag[];
   effectiveStyle: Exclude<MainStyle, "auto">;
@@ -312,8 +331,19 @@ export interface DeckSuggestion {
   weaknesses: string[];
   favorable: string[];
   unfavorable: string[];
+  lowDiversityWarning: string | null;
+  diversityRetries: number;
   /** Validation warnings (non-fatal — fatal violations would have caused a retry). */
   warnings: string[];
+}
+
+export interface DeckVariantsSuggestion {
+  selectedStyle: MainStyle;
+  selectedTags: FeatureTag[];
+  effectiveStyle: Exclude<MainStyle, "auto">;
+  styleAptitudes: LeaderStyleAptitude[];
+  variants: DeckSuggestion[];
+  comparison: DeckVariantsComparison;
 }
 
 export class DeckSuggestionError extends Error {
@@ -342,18 +372,22 @@ export function buildCandidatePool(
   selection: DeckPreferenceSelection = resolveDeckPreferences(),
   regulations: DeckRegulations = {},
   persistedSynergies: RuleSynergy[] = [],
+  variantProfile: VariantProfile = "recommended",
 ): CardCoachFactInput[] {
-  return buildCandidateAnalysis(
+  const analysis = buildCandidateAnalysis(
     leader,
     pool,
     selection,
     regulations,
     persistedSynergies,
-  ).pool;
+  );
+  return rankPreparedCandidatePool(leader, analysis, variantProfile);
 }
 
 interface CandidateAnalysis {
-  pool: CardCoachFactInput[];
+  analysisPool: CardCoachFactInput[];
+  rankingContext: ReturnType<typeof buildDeckCandidateRankingContext>;
+  effectiveSelection: DeckPreferenceSelection;
   aptitudes: LeaderStyleAptitude[];
   effectiveStyle: Exclude<MainStyle, "auto">;
 }
@@ -387,12 +421,28 @@ function buildCandidateAnalysis(
     selectedStyle: effectiveStyle,
   };
   return {
-    pool: rankDeckCandidates(leader, analysisPool, effectiveSelection, context)
-      .slice(0, POOL_SIZE_CAP)
-      .map((entry) => entry.card as CardCoachFactInput),
+    analysisPool,
+    rankingContext: context,
+    effectiveSelection,
     aptitudes,
     effectiveStyle,
   };
+}
+
+function rankPreparedCandidatePool(
+  leader: CardCoachFactInput,
+  analysis: CandidateAnalysis,
+  variantProfile: VariantProfile,
+): CardCoachFactInput[] {
+  return rankDeckCandidates(
+    leader,
+    analysis.analysisPool,
+    analysis.effectiveSelection,
+    analysis.rankingContext,
+    variantProfile,
+  )
+    .slice(0, POOL_SIZE_CAP)
+    .map((entry) => entry.card as CardCoachFactInput);
 }
 
 export function isVerifiedOfficialDeckFact(
@@ -443,7 +493,19 @@ const STYLE_CONSTRUCTION_GUIDANCE: Record<Exclude<MainStyle, "auto">, string> = 
   balanced: "リーダーの主要な強みを中心に、展開・防御・リソース・決定力を候補の実在サポート量に合わせる。",
 };
 
-function buildSystem(effectiveStyle: Exclude<MainStyle, "auto">): string {
+const VARIANT_CONSTRUCTION_GUIDANCE: Record<VariantProfile, string> = {
+  recommended:
+    "systemのLeader適性・Main Style・Feature Tags・候補順位を最も素直に反映する。",
+  consistency:
+    "Main StyleとFeature Tagsは変えず、searchability、feature support、印刷counter値、コスト帯の安定、繰り返しアクセスしやすい中核を補助的に重視する。",
+  specialization:
+    "Main StyleとFeature Tagsは変えず、その既存シグナルを推奨構築より少し強く反映する。Feature Tagsのsystem capを越える極端な配分にはしない。",
+};
+
+function buildSystem(
+  effectiveStyle: Exclude<MainStyle, "auto">,
+  variantProfile: VariantProfile = "recommended",
+): string {
   return [
     "あなたはワンピースカードゲームの上級デッキビルダーです。",
     "リーダーと候補カードプールが与えられるので、競技で使える 50 枚デッキを 1 つ提案してください。",
@@ -459,9 +521,12 @@ function buildSystem(effectiveStyle: Exclude<MainStyle, "auto">): string {
     "- 全リーダー共通の固定枚数・固定コスト比率は使わない。",
     "- verified official のリーダー効果、mechanics、features、legal poolのサポート量から構成を決める。",
     `- 選択スタイルの方針: ${STYLE_CONSTRUCTION_GUIDANCE[effectiveStyle]}`,
+    `- Variant Profile (${VARIANT_PROFILE_LABELS[variantProfile]}): ${VARIANT_CONSTRUCTION_GUIDANCE[variantProfile]}`,
+    "- Variant Profileは微調整軸であり、Leader affinity / Main Styleより優先しない。Main StyleやFeature Tagsを別のものへ変更しない。",
     "- Feature Tagsは補助重み。タグだけを満たすためにリーダー適性やデッキ全体の勝ち筋を崩さない。",
     "- system算出の適性score/星を変更・生成しない。適性の理由だけを説明する。",
     "- 数値メトリクスはsystemが生成後に計算するため、推測して出力しない。",
+    "- simulationやtournament metaは未使用。compositeだけで『最強』『絶対おすすめ』と断定しない。",
   ].join("\n");
 }
 
@@ -471,6 +536,11 @@ function buildUserPrompt(
   selection: DeckPreferenceSelection,
   effectiveStyle: Exclude<MainStyle, "auto">,
   aptitudes: LeaderStyleAptitude[],
+  variantProfile: VariantProfile = "recommended",
+  previousVariants: ReadonlyArray<
+    Pick<DeckSuggestion, "variantProfile" | "cards">
+  > = [],
+  diversityAttempt = 0,
 ): string {
   const lines: string[] = [];
   lines.push("## リーダー");
@@ -506,6 +576,10 @@ function buildUserPrompt(
   lines.push(
     "- main_style を構築の主軸にし、feature_tags は補助要素として使う。タグだけでデッキ全体を極端に歪めない。",
   );
+  lines.push(
+    `- variant_profile: ${variantProfile} / ${VARIANT_PROFILE_LABELS[variantProfile]}`,
+  );
+  lines.push(`- variant方針: ${VARIANT_CONSTRUCTION_GUIDANCE[variantProfile]}`);
   lines.push("");
 
   lines.push("## system算出 Leader Style Aptitude");
@@ -517,9 +591,29 @@ function buildUserPrompt(
   }
   lines.push("");
 
+  if (previousVariants.length > 0) {
+    lines.push("## 既に採用済みの比較案 (差分作成用・card factsではない)");
+    lines.push(
+      "Leader/Main Style/Feature Tagsと合法性を維持したまま、候補順位に沿ってカード配分へ意味のある差を作る。",
+    );
+    for (const previous of previousVariants) {
+      lines.push(
+        `- ${previous.variantProfile}: ${previous.cards
+          .map((card) => `${card.cardId}x${card.count}`)
+          .join(", ")}`,
+      );
+    }
+    if (diversityAttempt > 0) {
+      lines.push(
+        `- diversity retry ${diversityAttempt}: 前案はcard copy単位で95%以上共通だったため、このprofileの範囲内で採用カードまたは枚数配分を見直す。`,
+      );
+    }
+    lines.push("");
+  }
+
   lines.push(`## deterministic ranking 済み候補カードプール (${pool.length} 枚)`);
   lines.push(
-    "順序は system が leader適性、main_style、feature_tags の順で重み付け済み。候補外カードを追加しない。",
+    "順序は system が leader適性、main_styleを最重要に、variant_profileとfeature_tagsを補助軸として重み付け済み。候補外カードを追加しない。",
   );
   lines.push(
     "各行: name — id (type, colors) stat... features:[…] mech:[…] | official_effect | official_trigger",
@@ -634,6 +728,66 @@ function feedbackForRetry(violations: RuleViolation[]): string {
 export async function proposeDeck(
   input: DeckSuggestionInput,
 ): Promise<DeckSuggestion> {
+  const prepared = prepareDeckSuggestion(input);
+  const client = getAnthropic();
+  const model = MODEL[input.model ?? "opus"];
+  return generatePreparedDeck(
+    prepared,
+    client,
+    model,
+    "recommended",
+    [],
+    0,
+  );
+}
+
+/**
+ * Generate all three comparison profiles from one verified input snapshot.
+ * Candidate facts, regulations, aptitude and relationship detection are
+ * prepared once; each AI result is still validated and retried independently.
+ */
+export async function proposeDeckVariants(
+  input: DeckSuggestionInput,
+): Promise<DeckVariantsSuggestion> {
+  const prepared = prepareDeckSuggestion(input);
+  const client = getAnthropic();
+  const model = MODEL[input.model ?? "opus"];
+  const generated = await orchestrateVariantProfiles<DeckSuggestion>(
+    async (profile, accepted, diversityAttempt) =>
+      generatePreparedDeck(
+        prepared,
+        client,
+        model,
+        profile,
+        accepted.map((result) => result.proposal),
+        diversityAttempt,
+      ),
+    { candidatePoolSize: prepared.analysis.analysisPool.length },
+  );
+  const variants = generated.map((result) => ({
+    ...result.proposal,
+    lowDiversityWarning: result.lowDiversityWarning,
+    diversityRetries: result.diversityRetries,
+  }));
+  return {
+    selectedStyle: prepared.selection.selectedStyle,
+    selectedTags: prepared.selection.selectedTags,
+    effectiveStyle: prepared.analysis.effectiveStyle,
+    styleAptitudes: prepared.analysis.aptitudes,
+    variants,
+    comparison: buildDeckVariantsComparison(variants),
+  };
+}
+
+interface PreparedDeckSuggestion {
+  input: DeckSuggestionInput;
+  selection: DeckPreferenceSelection;
+  analysis: CandidateAnalysis;
+}
+
+function prepareDeckSuggestion(
+  input: DeckSuggestionInput,
+): PreparedDeckSuggestion {
   if (input.leader.cardType !== "LEADER") {
     throw new DeckSuggestionError(
       `${input.leader.id} (${input.leader.cardType}) is not a leader card.`,
@@ -664,17 +818,31 @@ export async function proposeDeck(
     input.regulations,
     input.persistedSynergies ?? [],
   );
-  const { pool, aptitudes, effectiveStyle } = analysis;
-  if (pool.length < 30) {
+  if (analysis.analysisPool.length < 30) {
     throw new DeckSuggestionError(
-      `Candidate pool too small (${pool.length}). Make sure the DB has cards in this leader's color(s).`,
+      `Candidate pool too small (${analysis.analysisPool.length}). Make sure the DB has cards in this leader's color(s).`,
       0,
     );
   }
-  const poolById = new Map(pool.map((c) => [c.id, c]));
+  return { input, selection, analysis };
+}
 
-  const client = getAnthropic();
-  const model = MODEL[input.model ?? "opus"];
+async function generatePreparedDeck(
+  prepared: PreparedDeckSuggestion,
+  client: ReturnType<typeof getAnthropic>,
+  model: (typeof MODEL)[keyof typeof MODEL],
+  variantProfile: VariantProfile,
+  previousVariants: ReadonlyArray<DeckSuggestion>,
+  diversityAttempt: number,
+): Promise<DeckSuggestion> {
+  const { input, selection, analysis } = prepared;
+  const { aptitudes, effectiveStyle } = analysis;
+  const pool = rankPreparedCandidatePool(
+    input.leader,
+    analysis,
+    variantProfile,
+  );
+  const poolById = new Map(pool.map((c) => [c.id, c]));
 
   const messages: Anthropic.MessageParam[] = [
     {
@@ -685,6 +853,9 @@ export async function proposeDeck(
         selection,
         effectiveStyle,
         aptitudes,
+        variantProfile,
+        previousVariants,
+        diversityAttempt,
       ),
     },
   ];
@@ -695,7 +866,7 @@ export async function proposeDeck(
     const response = await client.messages.create({
       model,
       max_tokens: 5000,
-      system: buildSystem(effectiveStyle),
+      system: buildSystem(effectiveStyle, variantProfile),
       tools: [PROPOSE_DECK_TOOL],
       tool_choice: { type: "tool", name: "propose_deck" },
       messages,
@@ -737,6 +908,9 @@ export async function proposeDeck(
         const metrics = buildPostGenerationMetrics(input.leader, metricEntries);
         return {
           modelVersion: `${model}@${new Date().toISOString().slice(0, 10)}`,
+          variantProfile,
+          variantLabel: VARIANT_PROFILE_LABELS[variantProfile],
+          variantReasonJa: validated.raw.variant_reason_ja,
           selectedStyle: selection.selectedStyle,
           selectedTags: selection.selectedTags,
           effectiveStyle,
@@ -763,6 +937,8 @@ export async function proposeDeck(
           weaknesses: validated.raw.weaknesses,
           favorable: validated.raw.typical_matchups.favorable,
           unfavorable: validated.raw.typical_matchups.unfavorable,
+          lowDiversityWarning: null,
+          diversityRetries: 0,
           warnings: validated.violations
             .filter((v) => v.severity !== "error")
             .map((v) => v.message),
@@ -789,6 +965,8 @@ export async function proposeDeck(
 export const _deckSuggestionTestInternals = {
   buildSystem,
   buildUserPrompt,
+  prepareDeckSuggestion,
   proposalSchema,
+  rankPreparedCandidatePool,
   validateProposal,
 };

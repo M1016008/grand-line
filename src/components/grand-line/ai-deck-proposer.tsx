@@ -2,6 +2,11 @@
 
 import { useState, useTransition } from "react";
 
+import type {
+  DeckSuggestion,
+  DeckVariantsSuggestion,
+} from "@/ai/deck-suggestion";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -21,10 +26,18 @@ import {
   MAIN_STYLE_IDS,
   MAIN_STYLE_LABELS,
   MAX_FEATURE_TAGS,
+  VARIANT_PROFILE_FOCUS_LABELS,
+  VARIANT_PROFILE_IDS,
   type FeatureTag,
   type LeaderStyleAptitude,
   type MainStyle,
 } from "@/lib/deck-intelligence-preferences";
+import {
+  DECK_INTELLIGENCE_GENERATION_MODES,
+  resolveDeckCopyEntries,
+  type DeckIntelligenceGenerationMode,
+  type VariantMetricSummary,
+} from "@/lib/deck-intelligence-compare";
 import { proxiedCardImage } from "@/lib/img";
 import { useDeckDraft } from "@/stores/deck";
 
@@ -32,43 +45,6 @@ interface AiDeckProposerProps {
   leader: CardListItem;
   pool: CardListItem[];
   styleAptitudes: LeaderStyleAptitude[];
-}
-
-interface ProposalResponse {
-  modelVersion: string;
-  selectedStyle: MainStyle;
-  selectedTags: FeatureTag[];
-  effectiveStyle: Exclude<MainStyle, "auto">;
-  styleAptitudes: LeaderStyleAptitude[];
-  archetypeName: string;
-  cards: Array<{
-    cardId: string;
-    count: number;
-    roleJa: string;
-    selectionReasonJa: string;
-  }>;
-  winCondition: string;
-  deckConceptJa: string;
-  styleAptitudeReasonJa: string;
-  keyCards: string[];
-  majorCombos: Array<{
-    titleJa: string;
-    cardIds: string[];
-    explanationJa: string;
-  }>;
-  curveExplanationJa: string;
-  metrics: {
-    costCurve: Record<string, number>;
-    counterDistribution: Record<string, number>;
-    triggerRatio: number;
-    evaluationScores: Record<string, number>;
-    majorMechanics: Array<{ mechanic: string; count: number }>;
-  };
-  strengths: string[];
-  weaknesses: string[];
-  favorable: string[];
-  unfavorable: string[];
-  warnings: string[];
 }
 
 interface ApiError {
@@ -84,11 +60,18 @@ export function AiDeckProposer({
 }: AiDeckProposerProps) {
   const [selectedStyle, setSelectedStyle] = useState<MainStyle>("auto");
   const [selectedTags, setSelectedTags] = useState<FeatureTag[]>([]);
-  const [proposal, setProposal] = useState<ProposalResponse | null>(null);
+  const [generationMode, setGenerationMode] =
+    useState<DeckIntelligenceGenerationMode>("single");
+  const [proposal, setProposal] = useState<DeckSuggestion | null>(null);
+  const [variantProposal, setVariantProposal] =
+    useState<DeckVariantsSuggestion | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [pending, startTransition] = useTransition();
   const replace = useDeckDraft((s) => s.replace);
-  const displayedAptitudes = proposal?.styleAptitudes ?? styleAptitudes;
+  const displayedAptitudes =
+    proposal?.styleAptitudes ??
+    variantProposal?.styleAptitudes ??
+    styleAptitudes;
   const aptitudeByStyle = new Map(
     displayedAptitudes.map((aptitude) => [aptitude.style, aptitude]),
   );
@@ -99,10 +82,15 @@ export function AiDeckProposer({
   async function fetchProposal() {
     setError(null);
     setProposal(null);
+    setVariantProposal(null);
     const res = await fetch(`/api/ai/decks/${leader.id}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ selectedStyle, selectedTags }),
+      body: JSON.stringify({
+        mode: generationMode,
+        selectedStyle,
+        selectedTags,
+      }),
     });
 
     if (!res.ok) {
@@ -110,8 +98,11 @@ export function AiDeckProposer({
       setError(err);
       return;
     }
-    const data = (await res.json()) as ProposalResponse;
-    setProposal(data);
+    if (generationMode === "compare") {
+      setVariantProposal((await res.json()) as DeckVariantsSuggestion);
+    } else {
+      setProposal((await res.json()) as DeckSuggestion);
+    }
   }
 
   function toggleTag(tag: FeatureTag) {
@@ -124,15 +115,8 @@ export function AiDeckProposer({
     });
   }
 
-  function applyProposal() {
-    if (!proposal) return;
-    const entries = proposal.cards
-      .map((c) => {
-        const card = poolById.get(c.cardId);
-        return card ? { card, count: c.count } : null;
-      })
-      .filter((e): e is NonNullable<typeof e> => e !== null);
-    replace(entries);
+  function applyProposal(target: DeckSuggestion) {
+    replace(resolveDeckCopyEntries(target.cards, poolById));
   }
 
   return (
@@ -148,6 +132,27 @@ export function AiDeckProposer({
         </div>
 
         <div className="space-y-3">
+          <div className="space-y-1.5">
+            <span className="text-muted-foreground text-[10px] tracking-widest uppercase">
+              Generation Mode
+            </span>
+            <div className="grid grid-cols-2 gap-1.5">
+              {DECK_INTELLIGENCE_GENERATION_MODES.map((mode) => (
+                <Button
+                  key={mode}
+                  type="button"
+                  size="sm"
+                  variant={generationMode === mode ? "secondary" : "outline"}
+                  aria-pressed={generationMode === mode}
+                  disabled={pending}
+                  onClick={() => setGenerationMode(mode)}
+                >
+                  {mode === "single" ? "おすすめ1案" : "3案を比較"}
+                </Button>
+              ))}
+            </div>
+          </div>
+
           <div className="space-y-1.5">
             <label className="text-muted-foreground text-[10px] tracking-widest uppercase">
               Main Style · 1つ
@@ -239,7 +244,13 @@ export function AiDeckProposer({
             size="sm"
             className="w-full"
           >
-            {pending ? "生成中…" : "提案"}
+            {pending
+              ? generationMode === "compare"
+                ? "3案を生成中…"
+                : "生成中…"
+              : generationMode === "compare"
+                ? "3案を生成して比較"
+                : "提案"}
           </Button>
         </div>
 
@@ -255,6 +266,14 @@ export function AiDeckProposer({
               </p>
             ) : null}
           </div>
+        ) : null}
+
+        {variantProposal ? (
+          <DeckVariantsView
+            response={variantProposal}
+            poolById={poolById}
+            onApply={applyProposal}
+          />
         ) : null}
 
         {proposal ? (
@@ -284,7 +303,11 @@ export function AiDeckProposer({
                   ))}
                 </div>
               </div>
-              <Button onClick={applyProposal} size="sm" variant="outline">
+              <Button
+                onClick={() => applyProposal(proposal)}
+                size="sm"
+                variant="outline"
+              >
                 下書きに反映
               </Button>
             </div>
@@ -429,6 +452,270 @@ export function AiDeckProposer({
       </CardContent>
     </Card>
   );
+}
+
+function DeckVariantsView({
+  response,
+  poolById,
+  onApply,
+}: {
+  response: DeckVariantsSuggestion;
+  poolById: Map<string, CardListItem>;
+  onApply: (proposal: DeckSuggestion) => void;
+}) {
+  const [showDetails, setShowDetails] = useState(false);
+  const byProfile = new Map(
+    response.variants.map((variant) => [variant.variantProfile, variant]),
+  );
+
+  return (
+    <div className="space-y-3 text-xs">
+      <Separator />
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <div className="text-muted-foreground text-[10px] tracking-widest uppercase">
+            Deck Intelligence Compare v1
+          </div>
+          <p className="text-muted-foreground mt-0.5 text-[10px]">
+            同じLeader・Main Style・Feature Tagsで構築方針だけを比較します。
+          </p>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          aria-expanded={showDetails}
+          onClick={() => setShowDetails((current) => !current)}
+        >
+          {showDetails ? "比較を閉じる" : "詳しく比較"}
+        </Button>
+      </div>
+
+      <div className="grid gap-2 lg:grid-cols-3">
+        {VARIANT_PROFILE_IDS.map((profile) => {
+          const variant = byProfile.get(profile);
+          if (!variant) return null;
+          const metrics = response.comparison.metricsByVariant[profile];
+          return (
+            <Card key={profile} className="border-border/50 bg-background/35">
+              <CardContent className="flex h-full flex-col gap-2 p-3">
+                <div>
+                  <Badge variant="secondary" className="text-[9px]">
+                    {variant.variantLabel}
+                  </Badge>
+                  <div className="font-display mt-1 text-sm font-semibold">
+                    {variant.archetypeName}
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    <Badge variant="outline" className="text-[9px]">
+                      {MAIN_STYLE_LABELS[variant.selectedStyle]}
+                    </Badge>
+                    {variant.selectedTags.map((tag) => (
+                      <Badge key={tag} variant="outline" className="text-[9px]">
+                        {FEATURE_TAG_LABELS[tag]}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+
+                <Section label="Deck Concept">
+                  <p>{variant.deckConceptJa}</p>
+                </Section>
+                <Section label="Variant Reason">
+                  <p>{variant.variantReasonJa}</p>
+                </Section>
+                <Section label="Key Cards">
+                  <div className="flex flex-wrap gap-1">
+                    {variant.keyCards.slice(0, 5).map((cardId) => (
+                      <Badge key={cardId} variant="outline" className="text-[9px]">
+                        {poolById.get(cardId)?.name ?? cardId}
+                      </Badge>
+                    ))}
+                  </div>
+                </Section>
+
+                <div className="border-border/30 grid grid-cols-2 gap-1 border-y py-2 font-mono text-[9px]">
+                  <span>Attack {metrics.attack}</span>
+                  <span>Stability {metrics.stability}</span>
+                  <span>Composite {metrics.composite}</span>
+                  <span>Trigger {(metrics.triggerRatio * 100).toFixed(1)}%</span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <Section label="Strengths">
+                    <Bullets items={variant.strengths.slice(0, 2)} />
+                  </Section>
+                  <Section label="Weaknesses">
+                    <Bullets items={variant.weaknesses.slice(0, 2)} />
+                  </Section>
+                </div>
+
+                {variant.lowDiversityWarning ? (
+                  <p className="text-source-unverified text-[10px]">
+                    ⚠ {variant.lowDiversityWarning}
+                  </p>
+                ) : null}
+
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="mt-auto w-full"
+                  onClick={() => onApply(variant)}
+                >
+                  この構築を下書きに反映
+                </Button>
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
+
+      {showDetails ? (
+        <DetailedVariantComparison response={response} poolById={poolById} />
+      ) : null}
+    </div>
+  );
+}
+
+function DetailedVariantComparison({
+  response,
+  poolById,
+}: {
+  response: DeckVariantsSuggestion;
+  poolById: Map<string, CardListItem>;
+}) {
+  const summaries = response.comparison.metricsByVariant;
+  const metricRows: Array<{
+    label: string;
+    render: (summary: VariantMetricSummary) => string;
+  }> = [
+    { label: "Attack", render: (summary) => String(summary.attack) },
+    { label: "Stability", render: (summary) => String(summary.stability) },
+    { label: "Expansion", render: (summary) => String(summary.expansion) },
+    { label: "Defense", render: (summary) => String(summary.defense) },
+    { label: "Meta", render: (summary) => String(summary.meta) },
+    { label: "Composite", render: (summary) => String(summary.composite) },
+    {
+      label: "Trigger ratio",
+      render: (summary) => `${(summary.triggerRatio * 100).toFixed(1)}%`,
+    },
+    {
+      label: "Counter distribution",
+      render: (summary) =>
+        `${summary.counterCards}枚 / 2000+ ${summary.counter2000Plus}枚`,
+    },
+    {
+      label: "Average / major cost bands",
+      render: (summary) =>
+        `${summary.averageCost.toFixed(2)} / ${costBandJa(summary.majorCostBand)} (${summary.costBands.low}-${summary.costBands.mid}-${summary.costBands.high})`,
+    },
+  ];
+
+  return (
+    <div className="border-border/40 bg-background/30 space-y-3 rounded-md border p-3">
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[620px] border-collapse text-left text-[10px]">
+          <thead>
+            <tr className="border-border/40 border-b">
+              <th className="p-2">指標</th>
+              {VARIANT_PROFILE_IDS.map((profile) => (
+                <th key={profile} className="p-2">
+                  {VARIANT_PROFILE_FOCUS_LABELS[profile]}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {metricRows.map((row) => (
+              <tr key={row.label} className="border-border/20 border-b last:border-0">
+                <th className="text-muted-foreground p-2 font-medium">
+                  {row.label}
+                </th>
+                {VARIANT_PROFILE_IDS.map((profile) => (
+                  <td key={profile} className="p-2 font-mono">
+                    {row.render(summaries[profile])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        {VARIANT_PROFILE_IDS.map((profile) => {
+          const comparison = response.comparison.cardsByVariant[profile];
+          return (
+            <Section
+              key={profile}
+              label={`${VARIANT_PROFILE_FOCUS_LABELS[profile]}だけの主な採用カード`}
+            >
+              <Bullets
+                items={comparison.uniqueCardIds
+                  .slice(0, 8)
+                  .map((cardId) => poolById.get(cardId)?.name ?? cardId)}
+              />
+              <p className="text-muted-foreground mt-1 text-[9px]">
+                増加: {formatDeltas(comparison.increasedCards, poolById)}
+              </p>
+              <p className="text-muted-foreground text-[9px]">
+                減少: {formatDeltas(comparison.decreasedCards, poolById)}
+              </p>
+            </Section>
+          );
+        })}
+      </div>
+
+      <Section label="共通採用カード">
+        <p>
+          {response.comparison.commonCards
+            .slice(0, 12)
+            .map(
+              (card) =>
+                `${poolById.get(card.cardId)?.name ?? card.cardId}×${card.sharedCopies}`,
+            )
+            .join(" / ") || "なし"}
+        </p>
+      </Section>
+
+      <Section label="Copy-level Similarity">
+        <p className="font-mono text-[9px]">
+          {response.comparison.similarities
+            .map(
+              (similarity) =>
+                `${VARIANT_PROFILE_FOCUS_LABELS[similarity.profiles[0]]}↔${VARIANT_PROFILE_FOCUS_LABELS[similarity.profiles[1]]}: shared ${similarity.sharedCardCopies} / different ${similarity.differentCardCopies} / ${(similarity.similarityRatio * 100).toFixed(1)}%`,
+            )
+            .join(" | ")}
+        </p>
+      </Section>
+    </div>
+  );
+}
+
+function formatDeltas(
+  deltas: Array<{
+    cardId: string;
+    referenceCount: number;
+    variantCount: number;
+  }>,
+  poolById: Map<string, CardListItem>,
+): string {
+  return (
+    deltas
+      .slice(0, 5)
+      .map(
+        (delta) =>
+          `${poolById.get(delta.cardId)?.name ?? delta.cardId} ${delta.referenceCount}→${delta.variantCount}`,
+      )
+      .join(" / ") || "なし"
+  );
+}
+
+function costBandJa(band: "low" | "mid" | "high"): string {
+  if (band === "low") return "low(0-3)";
+  if (band === "mid") return "mid(4-6)";
+  return "high(7+)";
 }
 
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
