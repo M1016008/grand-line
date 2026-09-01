@@ -2,12 +2,28 @@
 
 import { useState, useTransition } from "react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import type { CardListItem } from "@/lib/cards";
+import {
+  FEATURE_TAG_IDS,
+  FEATURE_TAG_LABELS,
+  MAIN_STYLE_IDS,
+  MAIN_STYLE_LABELS,
+  MAX_FEATURE_TAGS,
+  type FeatureTag,
+  type MainStyle,
+} from "@/lib/deck-intelligence-preferences";
 import { proxiedCardImage } from "@/lib/img";
 import { useDeckDraft } from "@/stores/deck";
 
@@ -18,6 +34,8 @@ interface AiDeckProposerProps {
 
 interface ProposalResponse {
   modelVersion: string;
+  selectedStyle: MainStyle;
+  selectedTags: FeatureTag[];
   archetypeName: string;
   cards: Array<{ cardId: string; count: number }>;
   winCondition: string;
@@ -35,7 +53,8 @@ interface ApiError {
 }
 
 export function AiDeckProposer({ leader, pool }: AiDeckProposerProps) {
-  const [preference, setPreference] = useState("");
+  const [selectedStyle, setSelectedStyle] = useState<MainStyle>("auto");
+  const [selectedTags, setSelectedTags] = useState<FeatureTag[]>([]);
   const [proposal, setProposal] = useState<ProposalResponse | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [pending, startTransition] = useTransition();
@@ -50,7 +69,7 @@ export function AiDeckProposer({ leader, pool }: AiDeckProposerProps) {
     const res = await fetch(`/api/ai/decks/${leader.id}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ preference: preference.trim() || undefined }),
+      body: JSON.stringify({ selectedStyle, selectedTags }),
     });
 
     if (!res.ok) {
@@ -60,6 +79,16 @@ export function AiDeckProposer({ leader, pool }: AiDeckProposerProps) {
     }
     const data = (await res.json()) as ProposalResponse;
     setProposal(data);
+  }
+
+  function toggleTag(tag: FeatureTag) {
+    setSelectedTags((current) => {
+      if (current.includes(tag)) {
+        return current.filter((candidate) => candidate !== tag);
+      }
+      if (current.length >= MAX_FEATURE_TAGS) return current;
+      return [...current, tag];
+    });
   }
 
   function applyProposal() {
@@ -78,25 +107,74 @@ export function AiDeckProposer({ leader, pool }: AiDeckProposerProps) {
       <CardContent className="space-y-3 p-4">
         <div className="flex items-baseline justify-between">
           <h3 className="font-display text-sm tracking-wide">
-            AI に提案させる
+            Deck Intelligence Builder
           </h3>
           <span className="text-muted-foreground text-[10px] tracking-widest uppercase">
             Phase 4 · Opus
           </span>
         </div>
 
-        <div className="flex gap-2">
-          <Input
-            value={preference}
-            onChange={(e) => setPreference(e.target.value)}
-            placeholder="任意: 速攻寄り / 防御重視 / 対 OP01-001 等"
-            maxLength={200}
-            className="text-xs"
-          />
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <label className="text-muted-foreground text-[10px] tracking-widest uppercase">
+              Main Style · 1つ
+            </label>
+            <Select
+              value={selectedStyle}
+              onValueChange={(value) => setSelectedStyle(value as MainStyle)}
+            >
+              <SelectTrigger className="w-full text-xs" aria-label="Main Style">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {MAIN_STYLE_IDS.map((style) => (
+                  <SelectItem key={style} value={style}>
+                    {MAIN_STYLE_LABELS[style]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-muted-foreground text-[10px] tracking-widest uppercase">
+                Feature Tags · 0〜3個
+              </span>
+              <span className="text-muted-foreground font-mono text-[10px]">
+                {selectedTags.length}/{MAX_FEATURE_TAGS}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {FEATURE_TAG_IDS.map((tag) => {
+                const selected = selectedTags.includes(tag);
+                const disabled =
+                  !selected && selectedTags.length >= MAX_FEATURE_TAGS;
+                return (
+                  <Button
+                    key={tag}
+                    type="button"
+                    size="xs"
+                    variant={selected ? "secondary" : "outline"}
+                    aria-pressed={selected}
+                    disabled={disabled || pending}
+                    onClick={() => toggleTag(tag)}
+                  >
+                    {FEATURE_TAG_LABELS[tag]}
+                  </Button>
+                );
+              })}
+            </div>
+            <p className="text-muted-foreground text-[10px] leading-relaxed">
+              Main Styleを主軸に、タグは候補順位へ補助的に加点します。
+            </p>
+          </div>
+
           <Button
             onClick={() => startTransition(fetchProposal)}
             disabled={pending}
             size="sm"
+            className="w-full"
           >
             {pending ? "生成中…" : "提案"}
           </Button>
@@ -126,6 +204,16 @@ export function AiDeckProposer({ leader, pool }: AiDeckProposerProps) {
                 </div>
                 <div className="text-foreground font-display text-base font-semibold">
                   {proposal.archetypeName}
+                </div>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  <Badge variant="secondary" className="text-[9px]">
+                    {MAIN_STYLE_LABELS[proposal.selectedStyle]}
+                  </Badge>
+                  {proposal.selectedTags.map((tag) => (
+                    <Badge key={tag} variant="outline" className="text-[9px]">
+                      {FEATURE_TAG_LABELS[tag]}
+                    </Badge>
+                  ))}
                 </div>
               </div>
               <Button onClick={applyProposal} size="sm" variant="outline">

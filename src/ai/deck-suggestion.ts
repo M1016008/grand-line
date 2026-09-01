@@ -29,9 +29,19 @@ import type { CardListItem } from "@/lib/cards";
 import {
   validateDeck,
   type DeckLeader,
+  type DeckRegulations,
   type DeckRuleCard,
   type RuleViolation,
 } from "@/lib/deck-rules";
+import {
+  FEATURE_TAG_LABELS,
+  MAIN_STYLE_LABELS,
+  rankDeckCandidates,
+  resolveDeckPreferences,
+  type DeckPreferenceSelection,
+  type FeatureTag,
+  type MainStyle,
+} from "@/lib/deck-intelligence-preferences";
 
 const MAX_RETRIES = 2;
 const POOL_SIZE_CAP = 220;
@@ -146,11 +156,12 @@ export interface DeckSuggestionInput {
   /** Cards available to the leader (color-filtered). Caller passes the full
    * leader-pool and we further compress before prompting. */
   pool: CardListItem[];
-  /**
-   * Free-text user nudge — "速攻寄り" / "ブロッカー多め" / "対 OP01-001 を意識".
-   * Forwarded to the model verbatim, capped at 200 chars by the route.
-   */
-  preference?: string;
+  /** Main style is the primary user-controlled ranking axis. */
+  selectedStyle?: MainStyle;
+  /** Optional deterministic secondary weights. At most three, without duplicates. */
+  selectedTags?: FeatureTag[];
+  /** Current active restrictions, loaded fail-closed by the route. */
+  regulations: DeckRegulations;
   /** Override the model. Default: Opus per roadmap §8.2. */
   model?: keyof typeof MODEL;
 }
@@ -162,6 +173,8 @@ export interface DeckSuggestionEntry {
 
 export interface DeckSuggestion {
   modelVersion: string;
+  selectedStyle: MainStyle;
+  selectedTags: FeatureTag[];
   archetypeName: string;
   cards: DeckSuggestionEntry[];
   winCondition: string;
@@ -189,57 +202,34 @@ export class DeckSuggestionError extends Error {
 /* ──────────────────────────────────────────────────────────────────────── */
 
 /**
- * Compress the leader's color pool to at most `POOL_SIZE_CAP` cards, biasing
- * toward cards that share a feature with the leader (the ones AI is most
- * likely to want) while keeping room for generic counter-cards / removal.
+ * Compress the verified, color-legal pool to at most `POOL_SIZE_CAP` cards.
+ * Ranking stays leader-first, treats the main style as the preference axis,
+ * and caps feature-tag influence so auxiliary tags cannot take over the deck.
  */
 export function buildCandidatePool(
   leader: CardListItem,
   pool: CardListItem[],
+  selection: DeckPreferenceSelection = resolveDeckPreferences(),
 ): CardListItem[] {
-  const leaderFeatures = new Set(leader.features);
   const leaderColors = new Set(leader.colors);
 
   const validColor = pool.filter(
     (c) =>
       c.id !== leader.id &&
       c.cardType !== "LEADER" &&
+      isVerifiedOfficialDeckFact(c) &&
       c.colors.some((col) => leaderColors.has(col)),
   );
+  return rankDeckCandidates(leader, validColor, selection)
+    .slice(0, POOL_SIZE_CAP)
+    .map((entry) => entry.card);
+}
 
-  // Bucket A: shares ≥1 feature with leader (archetype core).
-  // Bucket B: removal / blocker / counter staples (generic toolbox).
-  // Bucket C: everything else, kept as filler if buckets A + B are short.
-  const featureMatched: CardListItem[] = [];
-  const staples: CardListItem[] = [];
-  const filler: CardListItem[] = [];
-  for (const c of validColor) {
-    if (c.features.some((f) => leaderFeatures.has(f))) {
-      featureMatched.push(c);
-    } else if (
-      c.mechanics.includes("Blocker") ||
-      c.mechanics.includes("Banish") ||
-      c.mechanics.includes("Trash") ||
-      c.mechanics.includes("RestOpponentCard") ||
-      c.mechanics.includes("ReturnToHand") ||
-      (c.counter ?? 0) >= 2000
-    ) {
-      staples.push(c);
-    } else {
-      filler.push(c);
-    }
-  }
-
-  const sortById = (a: CardListItem, b: CardListItem) => a.id.localeCompare(b.id);
-  featureMatched.sort(sortById);
-  staples.sort(sortById);
-  filler.sort(sortById);
-
-  const out: CardListItem[] = [];
-  out.push(...featureMatched.slice(0, POOL_SIZE_CAP));
-  out.push(...staples.slice(0, Math.max(0, POOL_SIZE_CAP - out.length)));
-  out.push(...filler.slice(0, Math.max(0, POOL_SIZE_CAP - out.length)));
-  return out.slice(0, POOL_SIZE_CAP);
+export function isVerifiedOfficialDeckFact(card: CardListItem): boolean {
+  return (
+    card.verified &&
+    (card.source === "official_jp" || card.source === "official_en")
+  );
 }
 
 /* ──────────────────────────────────────────────────────────────────────── */
@@ -269,6 +259,7 @@ function buildSystem(): string {
     "- メインデッキは合計ちょうど 50 枚 (sum of count = 50)。リーダーは含めない。",
     "- 同名カード (同じ card_id) は 4 枚まで。",
     "- 候補プールに無い card_id は使わない (ハルシネーション禁止)。",
+    "- 候補は公式確認済みのカード事実だけ。候補に無い効果・コスト・特徴を作らない。",
     "- 必ず propose_deck ツールで応答する。free-form テキストは無視されます。",
     "",
     "## 推奨方針",
@@ -279,7 +270,11 @@ function buildSystem(): string {
   ].join("\n");
 }
 
-function buildUserPrompt(input: DeckSuggestionInput, pool: CardListItem[]): string {
+function buildUserPrompt(
+  input: DeckSuggestionInput,
+  pool: CardListItem[],
+  selection: DeckPreferenceSelection,
+): string {
   const lines: string[] = [];
   lines.push("## リーダー");
   lines.push(`- id: ${input.leader.id}`);
@@ -295,13 +290,28 @@ function buildUserPrompt(input: DeckSuggestionInput, pool: CardListItem[]): stri
   }
   lines.push("");
 
-  if (input.preference?.trim()) {
-    lines.push("## ユーザー要望");
-    lines.push(input.preference.trim());
-    lines.push("");
-  }
+  lines.push("## ユーザー指定 (system validated)");
+  lines.push(
+    `- main_style: ${selection.selectedStyle} / ${MAIN_STYLE_LABELS[selection.selectedStyle]}`,
+  );
+  lines.push(
+    `- feature_tags: ${
+      selection.selectedTags.length > 0
+        ? selection.selectedTags
+            .map((tag) => `${tag} / ${FEATURE_TAG_LABELS[tag]}`)
+            .join(", ")
+        : "なし"
+    }`,
+  );
+  lines.push(
+    "- main_style を構築の主軸にし、feature_tags は補助要素として使う。タグだけでデッキ全体を極端に歪めない。",
+  );
+  lines.push("");
 
-  lines.push(`## 候補カードプール (${pool.length} 枚)`);
+  lines.push(`## deterministic ranking 済み候補カードプール (${pool.length} 枚)`);
+  lines.push(
+    "順序は system が leader適性、main_style、feature_tags の順で重み付け済み。候補外カードを追加しない。",
+  );
   lines.push("各行: name — id (type, colors) stat... features:[…] mech:[…]");
   for (const c of pool) {
     lines.push(`- ${describeCard(c)}`);
@@ -325,6 +335,7 @@ function validateProposal(
   proposal: DeckProposalRaw,
   leader: CardListItem,
   poolById: Map<string, CardListItem>,
+  regulations: DeckRegulations,
 ): ValidatedProposal {
   const violations: RuleViolation[] = [];
   const ruleCards: DeckRuleCard[] = [];
@@ -365,7 +376,7 @@ function validateProposal(
     name: leader.name,
     colors: leader.colors,
   };
-  const ruleReport = validateDeck(leaderShape, ruleCards);
+  const ruleReport = validateDeck(leaderShape, ruleCards, regulations);
   for (const v of ruleReport.violations) {
     violations.push(v);
   }
@@ -403,8 +414,24 @@ export async function proposeDeck(
       0,
     );
   }
+  if (!isVerifiedOfficialDeckFact(input.leader)) {
+    throw new DeckSuggestionError(
+      `${input.leader.id} does not have verified official facts.`,
+      0,
+    );
+  }
 
-  const pool = buildCandidatePool(input.leader, input.pool);
+  let selection: DeckPreferenceSelection;
+  try {
+    selection = resolveDeckPreferences(
+      input.selectedStyle,
+      input.selectedTags,
+    );
+  } catch (error) {
+    throw new DeckSuggestionError((error as Error).message, 0);
+  }
+
+  const pool = buildCandidatePool(input.leader, input.pool, selection);
   if (pool.length < 30) {
     throw new DeckSuggestionError(
       `Candidate pool too small (${pool.length}). Make sure the DB has cards in this leader's color(s).`,
@@ -417,7 +444,7 @@ export async function proposeDeck(
   const model = MODEL[input.model ?? "opus"];
 
   const messages: Anthropic.MessageParam[] = [
-    { role: "user", content: buildUserPrompt(input, pool) },
+    { role: "user", content: buildUserPrompt(input, pool, selection) },
   ];
 
   let lastViolations: RuleViolation[] = [];
@@ -453,11 +480,18 @@ export async function proposeDeck(
         },
       ];
     } else {
-      const validated = validateProposal(parsed.data, input.leader, poolById);
+      const validated = validateProposal(
+        parsed.data,
+        input.leader,
+        poolById,
+        input.regulations,
+      );
       const fatal = validated.violations.filter((v) => v.severity === "error");
       if (fatal.length === 0) {
         return {
           modelVersion: `${model}@${new Date().toISOString().slice(0, 10)}`,
+          selectedStyle: selection.selectedStyle,
+          selectedTags: selection.selectedTags,
           archetypeName: validated.raw.archetype_name,
           cards: validated.raw.cards.map((c) => ({
             cardId: c.card_id,
@@ -490,3 +524,8 @@ export async function proposeDeck(
     lastViolations,
   );
 }
+
+export const _deckSuggestionTestInternals = {
+  buildUserPrompt,
+  validateProposal,
+};
