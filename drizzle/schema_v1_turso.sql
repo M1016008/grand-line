@@ -144,6 +144,20 @@ CREATE TABLE card_synergies (
 );
 CREATE INDEX idx_synergy_to ON card_synergies(to_card_id);
 
+CREATE TABLE card_coach_guides (
+  card_id           TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+  level             TEXT NOT NULL,          -- easy
+  guide_json        TEXT NOT NULL,          -- CardCoachGuide JSON
+  source_data_hash  TEXT NOT NULL,
+  prompt_version    TEXT NOT NULL,
+  ai_model_version  TEXT NOT NULL,
+  generated_at      INTEGER DEFAULT (unixepoch()) NOT NULL,
+  updated_at        INTEGER DEFAULT (unixepoch()) NOT NULL,
+  PRIMARY KEY (card_id, level)
+);
+CREATE INDEX idx_card_coach_guides_updated_at  ON card_coach_guides(updated_at);
+CREATE INDEX idx_card_coach_guides_source_hash ON card_coach_guides(source_data_hash);
+
 CREATE TABLE deck_probability_snapshots (
   id                  TEXT PRIMARY KEY,
   deck_id             TEXT NOT NULL REFERENCES decks(id) ON DELETE CASCADE,

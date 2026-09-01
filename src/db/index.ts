@@ -1,3 +1,8 @@
 export { db, schema } from "./client";
 export type { Database } from "./client";
-export type { CardTranslationSource, SynergyRelationType, ScenarioType } from "./schema";
+export type {
+  CardCoachLevel,
+  CardTranslationSource,
+  ScenarioType,
+  SynergyRelationType,
+} from "./schema";
