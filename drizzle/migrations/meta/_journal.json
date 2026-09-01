@@ -57,6 +57,13 @@
       "when": 1782528800000,
       "tag": "0007_site_performance_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1788230400000,
+      "tag": "0008_card_coach_guides",
+      "breakpoints": true
     }
   ]
 }

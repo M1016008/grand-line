@@ -1,8 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { CompatibleCardsSection } from "@/components/grand-line/compatible-cards-section";
-import { PlaystyleSection } from "@/components/grand-line/playstyle-section";
+import { CardCoachSection } from "@/components/grand-line/card-coach-section";
 import { SiteHeader } from "@/components/grand-line/site-header";
 import { ColorChip } from "@/components/grand-line/color-chip";
 import { PairBanBadge, RestrictionBadge } from "@/components/grand-line/restriction-badge";
@@ -13,8 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { getCard } from "@/lib/cards";
-import { getCompatibleCards } from "@/lib/card-compat";
-import { getCardPlaystyle } from "@/lib/playstyle";
+import { getCardCoachGuideForPage } from "@/lib/card-coach";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -33,11 +31,7 @@ export default async function CardDetailPage({ params }: PageProps) {
   const card = await getCard(id);
   if (!card) notFound();
 
-  // Fetched in parallel — both depend only on the resolved card.id.
-  const [compatible, playstyle] = await Promise.all([
-    getCompatibleCards(card.id, 5),
-    getCardPlaystyle(card.id),
-  ]);
+  const coachGuide = await getCardCoachGuideForPage(card.id);
 
   const stats: Array<[string, string | number | null]> = [
     ["コスト", card.cost],
@@ -211,8 +205,7 @@ export default async function CardDetailPage({ params }: PageProps) {
           </div>
         </div>
 
-        <PlaystyleSection cardId={card.id} playstyle={playstyle} />
-        <CompatibleCardsSection results={compatible} />
+        <CardCoachSection cardId={card.id} guide={coachGuide} />
       </main>
     </>
   );

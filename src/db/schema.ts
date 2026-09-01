@@ -24,6 +24,11 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+import type {
+  CardCoachGuide,
+  CardCoachLevel,
+} from "@/lib/card-coach-schema";
+export type { CardCoachLevel } from "@/lib/card-coach-schema";
 
 /* ──────────────────────────────────────────────────────────────────────── */
 /* §5.1 Card foundation                                                     */
@@ -439,6 +444,39 @@ export const cardPlaystyles = sqliteTable("card_playstyles", {
     .notNull()
     .default(sql`(unixepoch())`),
 });
+
+/**
+ * Full beginner-facing Card Coach guide for a single card.
+ *
+ * The guide JSON is AI-authored tactical explanation only. The AI prompt is
+ * built from verified official card facts plus system-selected compatible
+ * card/synergy candidates; generated card IDs are validated before this row
+ * is persisted.
+ */
+export const cardCoachGuides = sqliteTable(
+  "card_coach_guides",
+  {
+    cardId: text()
+      .notNull()
+      .references(() => cards.id, { onDelete: "cascade" }),
+    level: text({ enum: ["easy"] }).$type<CardCoachLevel>().notNull(),
+    guideJson: text({ mode: "json" }).$type<CardCoachGuide>().notNull(),
+    sourceDataHash: text().notNull(),
+    promptVersion: text().notNull(),
+    aiModelVersion: text().notNull(),
+    generatedAt: integer({ mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+    updatedAt: integer({ mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+  (t) => [
+    primaryKey({ columns: [t.cardId, t.level] }),
+    index("idx_card_coach_guides_updated_at").on(t.updatedAt),
+    index("idx_card_coach_guides_source_hash").on(t.sourceDataHash),
+  ],
+);
 
 /** Snapshot of probability calculations for a deck. */
 export const deckProbabilitySnapshots = sqliteTable(
