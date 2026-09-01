@@ -3,9 +3,8 @@
  *
  * Server-side only. The flow is:
  *   1. Try the database (Turso/local libSQL).
- *   2. If the request fails *or* the cards table is empty, fall back to the
- *      hand-curated mock catalogue so the UI is reviewable end-to-end before
- *      a real scrape has populated the DB.
+ *   2. Fail closed when the DB is unavailable or empty. The hand-curated mock
+ *      catalogue is available only with GRAND_LINE_ALLOW_MOCK_DATA=1.
  *   3. Mark mock-derived results with `usingMock: true` so the UI can show
  *      a banner instead of pretending the data is real.
  */
@@ -23,6 +22,7 @@ import {
   cards,
 } from "@/db/schema";
 import type { CardTranslationSource } from "@/db/schema";
+import { isMockDataAllowed } from "@/db/config";
 import { MOCK_CARDS, type MockCard } from "@/lib/mock-cards";
 
 export interface CardListItem {
@@ -117,11 +117,23 @@ export async function listCards(
   const pageSize = filters.pageSize ?? limit;
   const page = Math.max(1, filters.page ?? 1);
   const augmented: CardListFilters = { ...filters, pageSize, page };
+  const allowMock = isMockDataAllowed();
   try {
     const live = await listFromDb(augmented);
     if (live.totalAll > 0) return live;
   } catch (err) {
+    if (!allowMock) {
+      throw new Error(
+        "Card database is unavailable. Check GRAND_LINE_DATABASE_MODE and LOCAL_DB_PATH; mock data is disabled.",
+        { cause: err },
+      );
+    }
     console.warn("[cards] DB query failed, falling back to mock:", err);
+  }
+  if (!allowMock) {
+    throw new Error(
+      "Card database is empty. Refusing to show mock cards; configure the populated SSD database or set GRAND_LINE_ALLOW_MOCK_DATA=1 explicitly.",
+    );
   }
   return listFromMock(augmented);
 }
@@ -195,13 +207,20 @@ export async function listSets(): Promise<SetSummary[]> {
 }
 
 export async function getCard(id: string, language = "ja"): Promise<CardDetail | null> {
+  const allowMock = isMockDataAllowed();
   try {
     const live = await getFromDb(id, language);
     if (live) return live;
   } catch (err) {
+    if (!allowMock) {
+      throw new Error(
+        `Card database is unavailable while loading ${id}; mock data is disabled.`,
+        { cause: err },
+      );
+    }
     console.warn(`[cards] getCard(${id}) DB query failed, falling back to mock:`, err);
   }
-  return getFromMock(id);
+  return allowMock ? getFromMock(id) : null;
 }
 
 /* ──────────────────────────────────────────────────────────────────────── */

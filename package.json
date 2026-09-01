@@ -3,8 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "npm run db:verify",
     "dev": "next dev",
     "build": "next build",
+    "prestart": "npm run db:verify",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
@@ -13,6 +15,7 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "db:bootstrap": "tsx src/db/bootstrap.ts",
     "db:status": "tsx src/db/status.ts",
+    "db:verify": "tsx src/db/verify.ts",
     "db:prune:practice": "tsx src/db/prune-practice.ts",
     "db:optimize": "tsx src/db/prune-practice.ts --vacuum",
     "db:optimize:site": "tsx src/db/optimize-site-data.ts",
