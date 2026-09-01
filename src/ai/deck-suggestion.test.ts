@@ -17,6 +17,7 @@ import {
   MAIN_STYLE_IDS,
   resolveDeckPreferences,
   scoreDeckCandidate,
+  VARIANT_PROFILE_IDS,
   type FeatureTag,
 } from "@/lib/deck-intelligence-preferences";
 
@@ -249,6 +250,57 @@ test("main styles produce different deterministic rankings", () => {
   );
 });
 
+test("variant profiles deterministically adjust ranking without changing style or tags", () => {
+  const selection = resolveDeckPreferences("aggressive", ["trigger_focus"]);
+  const specialist = card({
+    id: "AAA-SPECIALIST",
+    cost: 2,
+    power: 6000,
+    counter: 0,
+    hasTrigger: true,
+    mechanics: ["Rush", "OnAttack", "Trigger"],
+  });
+  const stable = card({
+    id: "ZZZ-STABLE",
+    cost: 2,
+    power: 6000,
+    counter: 2000,
+    hasTrigger: false,
+    mechanics: ["Rush", "OnAttack", "Search"],
+  });
+  const profiles = Object.fromEntries(
+    VARIANT_PROFILE_IDS.map((profile) => [
+      profile,
+      buildCandidatePool(
+        RED_LEADER,
+        [specialist, stable],
+        selection,
+        {},
+        [],
+        profile,
+      ).map((candidate) => candidate.id),
+    ]),
+  );
+  assert.equal(profiles.recommended[0], "ZZZ-STABLE");
+  assert.equal(profiles.consistency[0], "ZZZ-STABLE");
+  assert.equal(profiles.specialization[0], "AAA-SPECIALIST");
+  for (const profile of VARIANT_PROFILE_IDS) {
+    assert.ok(
+      scoreDeckCandidate(
+        RED_LEADER,
+        specialist,
+        selection,
+        undefined,
+        profile,
+      ).variantProfile <= 5,
+    );
+  }
+  assert.deepEqual(selection, {
+    selectedStyle: "aggressive",
+    selectedTags: ["trigger_focus"],
+  });
+});
+
 test("ranking reuses leader, compatibility, searchability, feature and persisted synergy signals", () => {
   const searcher = card({
     id: "SEARCHER",
@@ -373,6 +425,36 @@ test("prompt keeps main style and feature tags as separate instructions", () => 
   assert.match(prompt, /main_style を構築の主軸/);
 });
 
+test("variant prompt preserves the same Leader, Main Style and Feature Tags", () => {
+  const selection = resolveDeckPreferences("tempo", [
+    "bounce_focus",
+    "counter_focus",
+  ]);
+  const prompt = _deckSuggestionTestInternals.buildUserPrompt(
+    {
+      leader: RED_LEADER,
+      pool: [],
+      selectedStyle: selection.selectedStyle,
+      selectedTags: selection.selectedTags,
+      regulations: {},
+    },
+    [card({ id: "CANDIDATE" })],
+    selection,
+    "tempo",
+    calculateLeaderStyleAptitudes(RED_LEADER, [card({ id: "CANDIDATE" })]),
+    "consistency",
+  );
+  assert.match(prompt, new RegExp(`- id: ${RED_LEADER.id}`));
+  assert.match(prompt, /main_style: tempo \/ テンポ型/);
+  assert.match(prompt, /bounce_focus \/ バウンス/);
+  assert.match(prompt, /counter_focus \/ カウンター重視/);
+  assert.match(prompt, /variant_profile: consistency \/ 安定構築/);
+  assert.match(
+    _deckSuggestionTestInternals.buildSystem("tempo", "consistency"),
+    /Main StyleやFeature Tagsを別のものへ変更しない/,
+  );
+});
+
 test("prompt uses verified official effect and trigger text only", () => {
   const official = card({
     id: "OFFICIAL-EFFECT",
@@ -432,6 +514,7 @@ test("proposal schema requires per-card roles and reasons", () => {
       },
     ],
     curve_explanation_ja: "カーブ説明",
+    variant_reason_ja: "variant理由",
     strengths: [],
     weaknesses: [],
     typical_matchups: { favorable: [], unfavorable: [] },
@@ -465,7 +548,7 @@ test("post-generation metrics are deterministic and derived from 50 cards", () =
   assert.equal(typeof first.evaluationScores.composite, "number");
 });
 
-test("proposal validation keeps current active restrictions", () => {
+test("each proposal validation keeps active bans, copy limits and pair bans", () => {
   const candidates = Array.from({ length: 13 }, (_, index) =>
     card({ id: `RESTRICT-${String(index + 1).padStart(2, "0")}` }),
   );
@@ -483,6 +566,7 @@ test("proposal validation keeps current active restrictions", () => {
     key_cards: [candidates[0].id],
     major_combos: [],
     curve_explanation_ja: "カーブ説明",
+    variant_reason_ja: "variant理由",
     strengths: [],
     weaknesses: [],
     typical_matchups: { favorable: [], unfavorable: [] },
@@ -491,11 +575,73 @@ test("proposal validation keeps current active restrictions", () => {
     raw,
     RED_LEADER,
     new Map(candidates.map((candidate) => [candidate.id, candidate])),
-    { perCardMax: new Map([[candidates[0].id, 0]]) },
+    {
+      perCardMax: new Map([[candidates[0].id, 0]]),
+      pairBans: [
+        { cardIdA: candidates[1].id, cardIdB: candidates[2].id },
+      ],
+    },
   );
   assert.ok(
     result.violations.some((violation) => violation.code === "banned_card"),
   );
+  assert.ok(
+    result.violations.some((violation) => violation.code === "banned_pair"),
+  );
+
+  const outside = structuredClone(raw);
+  outside.key_cards = ["OUTSIDE-CANDIDATE-POOL"];
+  const outsideResult = _deckSuggestionTestInternals.validateProposal(
+    outside,
+    RED_LEADER,
+    new Map(candidates.map((candidate) => [candidate.id, candidate])),
+    {},
+  );
+  assert.ok(
+    outsideResult.violations.some(
+      (violation) =>
+        violation.code === "unknown_card" &&
+        violation.cardIds?.includes("OUTSIDE-CANDIDATE-POOL"),
+    ),
+  );
+});
+
+test("the same legal proposal is independently valid for all three profiles", () => {
+  const candidates = Array.from({ length: 13 }, (_, index) =>
+    card({ id: `LEGAL-${String(index + 1).padStart(2, "0")}` }),
+  );
+  const raw = {
+    archetype_name: "合法構築",
+    cards: candidates.map((candidate, index) => ({
+      card_id: candidate.id,
+      count: index === candidates.length - 1 ? 2 : 4,
+      role_ja: "役割",
+      selection_reason_ja: "採用理由",
+    })),
+    win_condition: "勝ち筋",
+    deck_concept_ja: "コンセプト",
+    style_aptitude_reason_ja: "適性理由",
+    key_cards: [candidates[0].id],
+    major_combos: [],
+    curve_explanation_ja: "カーブ説明",
+    variant_reason_ja: "variant理由",
+    strengths: [],
+    weaknesses: [],
+    typical_matchups: { favorable: [], unfavorable: [] },
+  };
+  for (const profile of VARIANT_PROFILE_IDS) {
+    const result = _deckSuggestionTestInternals.validateProposal(
+      raw,
+      RED_LEADER,
+      new Map(candidates.map((candidate) => [candidate.id, candidate])),
+      {},
+    );
+    assert.equal(
+      result.violations.some((violation) => violation.severity === "error"),
+      false,
+      `${profile} should retain independent 50-card legality`,
+    );
+  }
 });
 
 test("proposeDeck rejects a non-LEADER input synchronously", async () => {
