@@ -1,4 +1,9 @@
 import type { SavedDeckDetail, SavedDeckEntry } from "@/lib/saved-decks";
+import {
+  fetchAndCacheCardImage,
+  parseAllowedCardImageUrl,
+  readCachedCardImage,
+} from "@/lib/card-image-cache";
 import { deflateSync, inflateSync } from "node:zlib";
 
 const MM_TO_PT = 72 / 25.4;
@@ -35,6 +40,8 @@ interface PdfImage {
 interface EmbeddedImage {
   name: string;
   objectId: number;
+  width: number;
+  height: number;
 }
 
 export interface DeckPrintPdfOptions {
@@ -131,7 +138,7 @@ async function embedImages(
   ];
 
   for (const url of urls) {
-    const image = await fetchPdfImage(url);
+    const image = await loadPdfImage(url);
     if (!image) continue;
 
     const objectId = builder.addStreamObject(
@@ -147,24 +154,39 @@ async function embedImages(
       ].join(" "),
       Buffer.from(image.bytes),
     );
-    images.set(url, { name: `Im${images.size + 1}`, objectId });
+    images.set(url, {
+      name: `Im${images.size + 1}`,
+      objectId,
+      width: image.width,
+      height: image.height,
+    });
   }
 
   return images;
 }
 
-async function fetchPdfImage(url: string): Promise<PdfImage | null> {
-  const target = normalizeImageUrl(url);
+async function loadPdfImage(url: string): Promise<PdfImage | null> {
+  let target: URL;
   try {
-    const res = await fetch(target, {
-      headers: {
-        accept: "image/jpeg,image/png,image/*;q=0.8,*/*;q=0.5",
-        referer: "https://www.onepiece-cardgame.com/",
-        "user-agent": "Grand Line deck print PDF generator",
-      },
-    });
-    if (!res.ok) return null;
-    const bytes = new Uint8Array(await res.arrayBuffer());
+    target = parseAllowedCardImageUrl(normalizeImageUrl(url));
+  } catch {
+    return null;
+  }
+
+  let bytes: Buffer;
+  try {
+    const cached = await readCachedCardImage(target);
+    bytes = cached.body;
+  } catch {
+    try {
+      const fetched = await fetchAndCacheCardImage(target);
+      bytes = fetched.body;
+    } catch {
+      return null;
+    }
+  }
+
+  try {
     return readJpegImage(bytes) ?? readPngImage(bytes);
   } catch {
     return null;
@@ -468,8 +490,11 @@ function buildPageContent(
     const image = card.imageUrlJp ? imageMap.get(card.imageUrlJp) : undefined;
 
     if (image) {
+      const placement = containImageInCard(image, x, y);
       lines.push("q");
-      lines.push(`${num(CARD_WIDTH)} 0 0 ${num(CARD_HEIGHT)} ${num(x)} ${num(y)} cm`);
+      lines.push(
+        `${num(placement.width)} 0 0 ${num(placement.height)} ${num(placement.x)} ${num(placement.y)} cm`,
+      );
       lines.push(`/${image.name} Do`);
       lines.push("Q");
       lines.push(`0 0 0 RG 0.25 w ${num(x)} ${num(y)} ${num(CARD_WIDTH)} ${num(CARD_HEIGHT)} re S`);
@@ -484,6 +509,22 @@ function buildPageContent(
   lines.push("ET");
 
   return `${lines.join("\n")}\n`;
+}
+
+function containImageInCard(
+  image: Pick<EmbeddedImage, "width" | "height">,
+  x: number,
+  y: number,
+) {
+  const scale = Math.min(CARD_WIDTH / image.width, CARD_HEIGHT / image.height);
+  const width = image.width * scale;
+  const height = image.height * scale;
+  return {
+    x: x + (CARD_WIDTH - width) / 2,
+    y: y + (CARD_HEIGHT - height) / 2,
+    width,
+    height,
+  };
 }
 
 function cropMarks(): string {

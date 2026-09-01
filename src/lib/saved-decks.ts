@@ -14,6 +14,7 @@ import { evaluateDeck, type EvalCard } from "@/lib/deck-evaluation";
 import {
   validateDeck,
   type DeckLeader,
+  type DeckRegulations,
   type DeckRuleReport,
 } from "@/lib/deck-rules";
 
@@ -87,6 +88,15 @@ export class SavedDeckError extends Error {
   ) {
     super(message);
     this.name = "SavedDeckError";
+  }
+}
+
+export class DeckRegulationsUnavailableError extends Error {
+  constructor(
+    message = "Active card restrictions could not be loaded.",
+  ) {
+    super(message);
+    this.name = "DeckRegulationsUnavailableError";
   }
 }
 
@@ -197,20 +207,10 @@ export async function getSavedDeck(id: string): Promise<SavedDeckDetail | null> 
     const bCost = b.card.cost ?? 99;
     return aCost - bCost || a.card.id.localeCompare(b.card.id);
   });
-  const ruleReport = validateDeck(
-    {
-      id: leader.id,
-      name: leader.name,
-      colors: leader.colors,
-    },
-    entries.map(({ card, count }) => ({
-      id: card.id,
-      cardType: card.cardType,
-      colors: card.colors,
-      count,
-    })),
-    await activeRegulations(),
-  );
+  const ruleReport = await validateSavedDeckForCurrentRules({
+    leader,
+    entries,
+  });
 
   return {
     id: row.id,
@@ -225,6 +225,25 @@ export async function getSavedDeck(id: string): Promise<SavedDeckDetail | null> 
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+export async function validateSavedDeckForCurrentRules(
+  deck: Pick<SavedDeckDetail, "leader" | "entries">,
+): Promise<DeckRuleReport> {
+  return validateDeck(
+    {
+      id: deck.leader.id,
+      name: deck.leader.name,
+      colors: deck.leader.colors,
+    },
+    deck.entries.map(({ card, count }) => ({
+      id: card.id,
+      cardType: card.cardType,
+      colors: card.colors,
+      count,
+    })),
+    await activeRegulations(),
+  );
 }
 
 export async function createSavedDeck(
@@ -464,28 +483,32 @@ function normalizeScores(
   return scores ?? {};
 }
 
-async function activeRegulations() {
-  const [singles, pairs] = await Promise.all([
-    db
-      .select({
-        cardId: cardRestrictions.cardId,
-        maxCopies: cardRestrictions.maxCopies,
-      })
-      .from(cardRestrictions)
-      .where(sql`${cardRestrictions.effectiveUntil} IS NULL`)
-      .catch(() => []),
-    db
-      .select({
-        cardIdA: cardRestrictionPairs.cardIdA,
-        cardIdB: cardRestrictionPairs.cardIdB,
-      })
-      .from(cardRestrictionPairs)
-      .where(sql`${cardRestrictionPairs.effectiveUntil} IS NULL`)
-      .catch(() => []),
-  ]);
+export async function activeRegulations(): Promise<DeckRegulations> {
+  try {
+    const [singles, pairs] = await Promise.all([
+      db
+        .select({
+          cardId: cardRestrictions.cardId,
+          maxCopies: cardRestrictions.maxCopies,
+        })
+        .from(cardRestrictions)
+        .where(sql`${cardRestrictions.effectiveUntil} IS NULL`),
+      db
+        .select({
+          cardIdA: cardRestrictionPairs.cardIdA,
+          cardIdB: cardRestrictionPairs.cardIdB,
+        })
+        .from(cardRestrictionPairs)
+        .where(sql`${cardRestrictionPairs.effectiveUntil} IS NULL`),
+    ]);
 
-  return {
-    perCardMax: new Map(singles.map((row) => [row.cardId, row.maxCopies])),
-    pairBans: pairs,
-  };
+    return {
+      perCardMax: new Map(singles.map((row) => [row.cardId, row.maxCopies])),
+      pairBans: pairs,
+    };
+  } catch {
+    throw new DeckRegulationsUnavailableError(
+      "Active card restrictions could not be loaded; refusing to validate a saved deck without current regulations.",
+    );
+  }
 }

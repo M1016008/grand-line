@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import {
   createSavedDeck,
+  DeckRegulationsUnavailableError,
   listSavedDecks,
   SavedDeckError,
 } from "@/lib/saved-decks";
@@ -58,6 +59,12 @@ export async function POST(req: Request) {
     const deck = await createSavedDeck(body);
     return NextResponse.json({ deck }, { status: 201 });
   } catch (err) {
+    if (err instanceof DeckRegulationsUnavailableError) {
+      return NextResponse.json(
+        { error: "regulations_unavailable", detail: err.message },
+        { status: 503 },
+      );
+    }
     if (err instanceof SavedDeckError) {
       return NextResponse.json(
         {
