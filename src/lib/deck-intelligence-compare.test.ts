@@ -2,8 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  applyDeckCopyEntries,
   buildDeckVariantsComparison,
   calculateDeckCopySimilarity,
+  DeckCopyResolutionError,
   DECK_INTELLIGENCE_GENERATION_MODES,
   orchestrateVariantProfiles,
   resolveDeckCopyEntries,
@@ -141,27 +143,51 @@ test("deterministic comparison finds common, unique and count-delta cards", () =
   assert.equal(first.metricsByVariant.recommended.majorCostBand, "mid");
 });
 
-test("any variant card list resolves to the existing draft replacement shape", () => {
-  const pool = new Map([
-    ["A", { id: "A", name: "Alpha" }],
-    ["B", { id: "B", name: "Beta" }],
-  ]);
-  for (const profile of VARIANT_PROFILE_IDS) {
-    const entries = resolveDeckCopyEntries(
-      [
-        { cardId: "A", count: profile === "recommended" ? 4 : 3 },
-        { cardId: "B", count: profile === "specialization" ? 4 : 2 },
-      ],
-      pool,
-    );
-    assert.deepEqual(
-      entries.map((entry) => [entry.card.id, entry.count]),
-      [
-        ["A", profile === "recommended" ? 4 : 3],
-        ["B", profile === "specialization" ? 4 : 2],
-      ],
-    );
-  }
+test("missing card ID rejects instead of dropping", () => {
+  const cards = fiftyCardDeck();
+  const pool = cardPool(cards.slice(0, -1));
+  assert.throws(
+    () => resolveDeckCopyEntries(cards, pool),
+    (error) =>
+      error instanceof DeckCopyResolutionError &&
+      error.code === "missing_card" &&
+      error.message.includes("CARD-12"),
+  );
+});
+
+test("total count != 50 rejects", () => {
+  const cards = fiftyCardDeck().map((entry, index) =>
+    index === 0 ? { ...entry, count: 3 } : entry,
+  );
+  assert.throws(
+    () => resolveDeckCopyEntries(cards, cardPool(cards)),
+    (error) =>
+      error instanceof DeckCopyResolutionError &&
+      error.code === "invalid_total" &&
+      error.message.includes("49"),
+  );
+});
+
+test("valid 50-card variant applies normally", () => {
+  const cards = fiftyCardDeck();
+  const applied: Array<{ card: { id: string }; count: number }> = [];
+  applyDeckCopyEntries(cards, cardPool(cards), (resolved) => {
+    applied.push(...resolved);
+  });
+  assert.equal(applied.reduce((sum, entry) => sum + entry.count, 0), 50);
+  assert.equal(applied.length, 13);
+});
+
+test("failure leaves existing draft unchanged", () => {
+  const existingDraft = [{ card: { id: "EXISTING" }, count: 4 }];
+  let draft = existingDraft;
+  const cards = fiftyCardDeck();
+  assert.throws(() =>
+    applyDeckCopyEntries(cards, cardPool(cards.slice(0, -1)), (resolved) => {
+      draft = resolved;
+    }),
+  );
+  assert.strictEqual(draft, existingDraft);
 });
 
 function fiftyCardDeck(): DeckCopyEntry[] {
@@ -169,6 +195,10 @@ function fiftyCardDeck(): DeckCopyEntry[] {
     cardId: `CARD-${String(index).padStart(2, "0")}`,
     count: index === 12 ? 2 : 4,
   }));
+}
+
+function cardPool(cards: DeckCopyEntry[]): Map<string, { id: string }> {
+  return new Map(cards.map((card) => [card.cardId, { id: card.cardId }]));
 }
 
 function diversify(

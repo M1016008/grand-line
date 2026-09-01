@@ -13,14 +13,58 @@ export interface DeckCopyEntry {
   count: number;
 }
 
+export class DeckCopyResolutionError extends Error {
+  constructor(
+    message: string,
+    readonly code: "missing_card" | "invalid_count" | "invalid_total",
+  ) {
+    super(message);
+    this.name = "DeckCopyResolutionError";
+  }
+}
+
 export function resolveDeckCopyEntries<T>(
   entries: DeckCopyEntry[],
   poolById: ReadonlyMap<string, T>,
 ): Array<{ card: T; count: number }> {
-  return entries.flatMap((entry) => {
+  const resolved: Array<{ card: T; count: number }> = [];
+  let totalCount = 0;
+
+  for (const entry of entries) {
     const card = poolById.get(entry.cardId);
-    return card ? [{ card, count: entry.count }] : [];
-  });
+    if (card === undefined) {
+      throw new DeckCopyResolutionError(
+        `Proposal card ${entry.cardId} is missing from the current card pool.`,
+        "missing_card",
+      );
+    }
+    if (!Number.isInteger(entry.count) || entry.count <= 0) {
+      throw new DeckCopyResolutionError(
+        `Proposal card ${entry.cardId} has an invalid count: ${entry.count}.`,
+        "invalid_count",
+      );
+    }
+    resolved.push({ card, count: entry.count });
+    totalCount += entry.count;
+  }
+
+  if (totalCount !== 50) {
+    throw new DeckCopyResolutionError(
+      `Proposal card count must total 50; received ${totalCount}.`,
+      "invalid_total",
+    );
+  }
+
+  return resolved;
+}
+
+export function applyDeckCopyEntries<T>(
+  entries: DeckCopyEntry[],
+  poolById: ReadonlyMap<string, T>,
+  replace: (resolved: Array<{ card: T; count: number }>) => void,
+): void {
+  const resolved = resolveDeckCopyEntries(entries, poolById);
+  replace(resolved);
 }
 
 export interface DeckCopySimilarity {

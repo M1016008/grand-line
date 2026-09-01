@@ -34,8 +34,8 @@ import {
   type VariantProfile,
 } from "@/lib/deck-intelligence-preferences";
 import {
+  applyDeckCopyEntries,
   DECK_INTELLIGENCE_GENERATION_MODES,
-  resolveDeckCopyEntries,
   type DeckIntelligenceGenerationMode,
   type VariantMetricSummary,
 } from "@/lib/deck-intelligence-compare";
@@ -76,6 +76,7 @@ export function AiDeckProposer({
   const [variantProposal, setVariantProposal] =
     useState<DeckVariantsSuggestion | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
+  const [applyError, setApplyError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const replace = useDeckDraft((s) => s.replace);
   const displayedAptitudes =
@@ -91,6 +92,7 @@ export function AiDeckProposer({
 
   async function fetchProposal() {
     setError(null);
+    setApplyError(null);
     setProposal(null);
     setVariantProposal(null);
     const res = await fetch(`/api/ai/decks/${leader.id}`, {
@@ -126,7 +128,14 @@ export function AiDeckProposer({
   }
 
   function applyProposal(target: DeckSuggestion) {
-    replace(resolveDeckCopyEntries(target.cards, poolById));
+    setApplyError(null);
+    try {
+      applyDeckCopyEntries(target.cards, poolById, replace);
+    } catch {
+      setApplyError(
+        "提案カードを下書きへ反映できませんでした。提案を再生成してください。",
+      );
+    }
   }
 
   return (
@@ -275,6 +284,12 @@ export function AiDeckProposer({
                 を設定して dev サーバを再起動してください。
               </p>
             ) : null}
+          </div>
+        ) : null}
+
+        {applyError ? (
+          <div className="border-destructive/40 bg-destructive/10 text-destructive rounded-md border p-3 text-xs">
+            {applyError}
           </div>
         ) : null}
 
