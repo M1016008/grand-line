@@ -74,5 +74,7 @@ export interface StoredCardCoachGuide {
 
 export interface CardCoachGuideView extends StoredCardCoachGuide {
   source: "card_coach" | "playstyle_fallback";
+  currentSourceDataHash: string | null;
+  sourceDataStale: boolean;
   cardRefs: Record<string, CardCoachCardRef>;
 }

@@ -76,6 +76,14 @@ export function CardCoachSection({ cardId, guide }: CardCoachSectionProps) {
                   ? "旧ガイド"
                   : "AI解説"}
               </Badge>
+              {current?.sourceDataStale ? (
+                <Badge
+                  variant="outline"
+                  className="border-amber-400/50 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-300"
+                >
+                  再生成推奨
+                </Badge>
+              ) : null}
             </div>
             {generatedAt ? (
               <p className="text-muted-foreground text-[10px]">

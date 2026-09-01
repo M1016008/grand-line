@@ -8,6 +8,7 @@ import {
   type CardCoachGuide,
   type CardCoachLevel,
 } from "@/lib/card-coach-schema";
+import { cardCoachCompatibleReasoningForPrompt } from "@/lib/card-coach-source-data";
 
 const MAX_RETRIES = 2;
 
@@ -467,6 +468,11 @@ function describeCard(card: CardCoachFactInput): string {
 }
 
 function describeCompatible(candidate: CardCoachCompatibleInput): string {
+  const reasoningJa = cardCoachCompatibleReasoningForPrompt(
+    candidate.source,
+    candidate.reasoningJa,
+  );
+
   return [
     `- candidate_id: ${candidate.card.id}`,
     `  name: ${candidate.card.name}`,
@@ -475,7 +481,7 @@ function describeCompatible(candidate: CardCoachCompatibleInput): string {
     `  features: ${candidate.card.features.join(" / ") || "(なし)"}`,
     `  mechanics: ${candidate.card.mechanics.join(", ") || "(なし)"}`,
     `  relation: ${candidate.relationType}, strength: ${candidate.strength.toFixed(1)} / 10, source: ${candidate.source}`,
-    `  system_reasoning_ja: ${candidate.reasoningJa || "(なし)"}`,
+    `  system_reasoning_ja: ${reasoningJa || "(なし)"}`,
     "  effect:",
     indent(quote(candidate.card.effectText ?? "(効果記載なし)")),
     candidate.card.triggerText

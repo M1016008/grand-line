@@ -8,6 +8,7 @@ import type { Database } from "@/db/client";
 import * as schema from "@/db/schema";
 import type { CardCoachGuide } from "@/lib/card-coach-schema";
 import {
+  isMissingCardCoachGuidesTableError,
   readStoredCardCoachGuideFromDb,
   readVerifiedCardFactsByIdsFromDb,
   writeStoredCardCoachGuideToDb,
@@ -102,6 +103,61 @@ test("Card Coach verified fact reader ignores unverified/manual card text", asyn
 
     assert.equal(facts.get("OP01-001")?.name, "モンキー・D・ルフィ");
     assert.equal(facts.has("OP01-013"), false);
+  } finally {
+    await cleanup(ctx);
+  }
+});
+
+test("Card Coach storage classifies only missing guide table errors as fallbackable", () => {
+  assert.equal(
+    isMissingCardCoachGuidesTableError(
+      new Error("SQLITE_ERROR: no such table: card_coach_guides"),
+    ),
+    true,
+  );
+  assert.equal(
+    isMissingCardCoachGuidesTableError(
+      new Error("SQLITE_ERROR: no such table: cards"),
+    ),
+    false,
+  );
+  assert.equal(
+    isMissingCardCoachGuidesTableError(new SyntaxError("Unexpected token")),
+    false,
+  );
+});
+
+test("Card Coach storage propagates invalid guide JSON", async () => {
+  const ctx = await createTestDatabase();
+  try {
+    await seedCards(ctx.database);
+    await ctx.client.execute({
+      sql: `
+        INSERT INTO card_coach_guides (
+          card_id,
+          level,
+          guide_json,
+          source_data_hash,
+          prompt_version,
+          ai_model_version,
+          generated_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
+      `,
+      args: [
+        "OP01-001",
+        "easy",
+        "{",
+        "hash-1",
+        "card-coach-v1.0.0",
+        "claude-sonnet-4-6@test",
+      ],
+    });
+
+    await assert.rejects(
+      () => readStoredCardCoachGuideFromDb(ctx.database, "OP01-001", "easy"),
+      SyntaxError,
+    );
   } finally {
     await cleanup(ctx);
   }

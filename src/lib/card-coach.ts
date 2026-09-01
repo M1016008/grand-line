@@ -1,7 +1,5 @@
 import "server-only";
 
-import { createHash } from "node:crypto";
-
 import {
   analyzeCardCoach,
   CARD_COACH_PROMPT_VERSION,
@@ -13,11 +11,18 @@ import { db } from "@/db";
 import { getCompatibleCards } from "@/lib/card-compat";
 import {
   cardExistsInDb,
+  isMissingCardCoachGuidesTableError,
   readCardRefsByIdsFromDb,
   readStoredCardCoachGuideFromDb,
   readVerifiedCardFactsByIdsFromDb,
   writeStoredCardCoachGuideToDb,
 } from "@/lib/card-coach-storage";
+import {
+  cardCoachCompatibleReasoningForPrompt,
+  hashSourceData,
+  isCardCoachSourceDataStale,
+  stableStringify,
+} from "@/lib/card-coach-source-data";
 import {
   type CardCoachGuide,
   type CardCoachGuideView,
@@ -51,11 +56,19 @@ export async function getCardCoachGuideForPage(
   cardId: string,
   level: CardCoachLevel = "easy",
 ): Promise<CardCoachGuideView | null> {
+  let stored: StoredCardCoachGuide | null;
   try {
-    const stored = await readStoredCardCoachGuideFromDb(db, cardId, level);
-    if (stored) return toGuideView(stored, "card_coach");
-  } catch {
-    /* New table may not be migrated in local dev yet. Fall through. */
+    stored = await readStoredCardCoachGuideFromDb(db, cardId, level);
+  } catch (err) {
+    if (!isMissingCardCoachGuidesTableError(err)) throw err;
+    return getPlaystyleFallbackGuide(cardId, level);
+  }
+
+  if (stored) {
+    const currentSourceDataHash = (
+      await prepareCardCoachGeneration(cardId, level)
+    ).sourceDataHash;
+    return toGuideView(stored, "card_coach", currentSourceDataHash);
   }
 
   return getPlaystyleFallbackGuide(cardId, level);
@@ -90,7 +103,10 @@ export async function prepareCardCoachGeneration(
       card: fact,
       relationType: candidate.relationType,
       strength: candidate.strength,
-      reasoningJa: candidate.reasoningJa,
+      reasoningJa: cardCoachCompatibleReasoningForPrompt(
+        candidate.source,
+        candidate.reasoningJa,
+      ),
       source: candidate.source,
     });
   }
@@ -151,6 +167,7 @@ export async function generateAndStoreCardCoachGuide(
       updatedAt: generatedAt.toISOString(),
     },
     "card_coach",
+    prepared.sourceDataHash,
   );
 }
 
@@ -201,6 +218,8 @@ async function getPlaystyleFallbackGuide(
     generatedAt: playstyle.generatedAt,
     updatedAt: playstyle.generatedAt,
     source: "playstyle_fallback",
+    currentSourceDataHash: null,
+    sourceDataStale: false,
     cardRefs: verifiedRefs,
   };
 }
@@ -208,12 +227,18 @@ async function getPlaystyleFallbackGuide(
 async function toGuideView(
   stored: StoredCardCoachGuide,
   source: CardCoachGuideView["source"],
+  currentSourceDataHash: string | null,
 ): Promise<CardCoachGuideView> {
   const ids = collectGuideCardIds(stored.cardId, stored.guide);
   const cardRefs = await readCardRefsByIdsFromDb(db, ids);
   return {
     ...stored,
     source,
+    currentSourceDataHash,
+    sourceDataStale:
+      source === "card_coach"
+        ? isCardCoachSourceDataStale(stored.sourceDataHash, currentSourceDataHash)
+        : false,
     cardRefs,
   };
 }
@@ -225,25 +250,6 @@ function collectGuideCardIds(cardId: string, guide: CardCoachGuide): string[] {
     for (const comboCardId of combo.cardIds) ids.add(comboCardId);
   }
   return [...ids];
-}
-
-function hashSourceData(value: unknown): string {
-  return createHash("sha256").update(stableStringify(value)).digest("hex");
-}
-
-function stableStringify(value: unknown): string {
-  return JSON.stringify(sortJson(value));
-}
-
-function sortJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortJson);
-  if (!value || typeof value !== "object") return value;
-
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, child]) => [key, sortJson(child)]),
-  );
 }
 
 export const _cardCoachLibTestInternals = {

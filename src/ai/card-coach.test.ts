@@ -8,6 +8,8 @@ import {
   CardCoachValidationError,
   parseAndValidateCardCoachPayload,
   UnverifiedCardFactError,
+  _cardCoachTestInternals,
+  type CardCoachCompatibleInput,
   type CardCoachFactInput,
 } from "@/ai/card-coach";
 
@@ -149,6 +151,46 @@ test("Card Coach refuses unverified card facts as AI input", () => {
       }),
     UnverifiedCardFactError,
   );
+});
+
+test("Card Coach prompt omits AI compatible reasoning but keeps verified facts", () => {
+  const compatibleCards: CardCoachCompatibleInput[] = [
+    {
+      card: fact({
+        id: "OP01-016",
+        cardType: "CHARACTER",
+        name: "Rules Candidate",
+      }),
+      relationType: "tempo_combo",
+      strength: 8,
+      reasoningJa: "RULE_REASONING_SAFE",
+      source: "rules",
+    },
+    {
+      card: fact({
+        id: "OP01-017",
+        cardType: "CHARACTER",
+        name: "AI Candidate",
+        effectText: "AI candidate verified effect text",
+      }),
+      relationType: "resource_engine",
+      strength: 7,
+      reasoningJa: "AI_REASONING_SHOULD_NOT_APPEAR",
+      source: "ai",
+    },
+  ];
+
+  const prompt = _cardCoachTestInternals.buildPrompt({
+    card: fact(),
+    compatibleCards,
+    level: "easy",
+  });
+
+  assert.match(prompt, /RULE_REASONING_SAFE/);
+  assert.doesNotMatch(prompt, /AI_REASONING_SHOULD_NOT_APPEAR/);
+  assert.match(prompt, /OP01-017/);
+  assert.match(prompt, /AI Candidate/);
+  assert.match(prompt, /AI candidate verified effect text/);
 });
 
 test("Card Coach generation reports the missing API key state", async () => {

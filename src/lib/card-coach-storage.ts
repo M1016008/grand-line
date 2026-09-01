@@ -21,6 +21,38 @@ const OFFICIAL_FACT_SOURCES = [
   "official_en",
 ] as const satisfies readonly CardTranslationSource[];
 
+export function isMissingCardCoachGuidesTableError(error: unknown): boolean {
+  return /\bno such table:\s*card_coach_guides\b/i.test(
+    collectErrorText(error).join("\n"),
+  );
+}
+
+function collectErrorText(value: unknown, seen = new Set<unknown>()): string[] {
+  if (typeof value === "string") return [value];
+  if (!value || (typeof value !== "object" && typeof value !== "function")) {
+    return [];
+  }
+  if (seen.has(value)) return [];
+  seen.add(value);
+
+  const record = value as Record<string, unknown>;
+  const parts: string[] = [];
+  if (value instanceof Error) {
+    parts.push(value.name, value.message);
+  }
+
+  for (const key of ["code", "rawCode", "cause"]) {
+    const child = record[key];
+    if (typeof child === "string" || typeof child === "number") {
+      parts.push(String(child));
+    } else {
+      parts.push(...collectErrorText(child, seen));
+    }
+  }
+
+  return parts.filter((part) => part.length > 0);
+}
+
 export interface WriteStoredCardCoachGuideInput {
   cardId: string;
   level: CardCoachLevel;
