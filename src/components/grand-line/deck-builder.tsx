@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { Save } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 import { AiDeckProposer } from "@/components/grand-line/ai-deck-proposer";
 import { ColorChip } from "@/components/grand-line/color-chip";
@@ -39,6 +41,18 @@ interface DeckBuilderProps {
 
 const TARGET = 50;
 
+type SaveState =
+  | { status: "idle"; message: string | null }
+  | { status: "saving"; message: string | null }
+  | { status: "error"; message: string }
+  | { status: "saved"; message: string };
+
+interface SaveDeckResponse {
+  deck?: { id: string };
+  detail?: string;
+  violations?: RuleViolation[];
+}
+
 export function DeckBuilder({
   leader,
   pool,
@@ -46,11 +60,17 @@ export function DeckBuilder({
   perCardMax = {},
   pairBans = [],
 }: DeckBuilderProps) {
+  const router = useRouter();
   const setLeader = useDeckDraft((s) => s.setLeader);
   const entries = useDeckDraft((s) => s.entries);
   const add = useDeckDraft((s) => s.add);
   const remove = useDeckDraft((s) => s.remove);
   const clear = useDeckDraft((s) => s.clear);
+  const [deckName, setDeckName] = useState("");
+  const [saveState, setSaveState] = useState<SaveState>({
+    status: "idle",
+    message: null,
+  });
 
   // Initialize the draft to this leader on first mount. Switching leaders
   // wipes the previous draft (handled inside the store).
@@ -113,6 +133,59 @@ export function DeckBuilder({
     const cb = b.card.cost ?? 99;
     return ca - cb || a.card.id.localeCompare(b.card.id);
   });
+  const saveDisabled = usingMock || !report.legal || saveState.status === "saving";
+
+  async function saveDeck() {
+    if (usingMock) {
+      setSaveState({
+        status: "error",
+        message: "Load verified card data before saving decks.",
+      });
+      return;
+    }
+    if (!report.legal) {
+      setSaveState({
+        status: "error",
+        message: "Make the deck legal before saving it.",
+      });
+      return;
+    }
+
+    setSaveState({ status: "saving", message: "Saving deck..." });
+    const res = await fetch("/api/decks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        leaderCardId: leader.id,
+        name: deckName.trim() || `${leader.name} deck`,
+        entries: sortedEntries.map(({ card, count }) => ({
+          cardId: card.id,
+          count,
+        })),
+      }),
+    });
+    const payload = (await res.json().catch(() => null)) as SaveDeckResponse | null;
+
+    if (!res.ok) {
+      setSaveState({
+        status: "error",
+        message: payload?.detail ?? "Deck save failed.",
+      });
+      return;
+    }
+
+    const deckId = payload?.deck?.id;
+    if (!deckId) {
+      setSaveState({
+        status: "error",
+        message: "Deck was saved, but the response did not include an id.",
+      });
+      return;
+    }
+
+    setSaveState({ status: "saved", message: "Saved. Opening deck..." });
+    router.push(`/decks/${deckId}`);
+  }
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_360px]">
@@ -265,6 +338,55 @@ export function DeckBuilder({
               </p>
               <CostCurveBars curve={curve} />
             </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/40 bg-card/40">
+          <CardContent className="space-y-3 p-4">
+            <div>
+              <label
+                htmlFor="deck-name"
+                className="text-muted-foreground text-[11px] tracking-widest uppercase"
+              >
+                Save deck
+              </label>
+              <Input
+                id="deck-name"
+                value={deckName}
+                onChange={(event) => setDeckName(event.target.value)}
+                placeholder={`${leader.name} deck`}
+                maxLength={80}
+              />
+            </div>
+            <Button
+              type="button"
+              onClick={saveDeck}
+              disabled={saveDisabled}
+              className="w-full"
+            >
+              <Save aria-hidden="true" />
+              Save
+            </Button>
+            {saveState.message ? (
+              <p
+                className={cn(
+                  "text-xs",
+                  saveState.status === "error"
+                    ? "text-destructive"
+                    : "text-muted-foreground",
+                )}
+              >
+                {saveState.message}
+              </p>
+            ) : usingMock ? (
+              <p className="text-muted-foreground text-xs">
+                Saving is disabled while the builder is using mock card data.
+              </p>
+            ) : !report.legal ? (
+              <p className="text-muted-foreground text-xs">
+                Legal 50-card decks can be saved for printing.
+              </p>
+            ) : null}
           </CardContent>
         </Card>
 
