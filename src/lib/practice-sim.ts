@@ -87,6 +87,13 @@ export interface BatchResult {
   replays?: GameReplayLog[];
 }
 
+export interface PracticeMatchSummaryOptions {
+  /** Defaults to every replay to preserve the existing simulateBatch API. */
+  replaySampleSize?: number;
+  /** Existing batches keep eight; benchmark callers can retain more before filtering by side. */
+  topContributorLimit?: number;
+}
+
 interface DraftLikeEntry {
   card: CardListItem;
   count: number;
@@ -275,10 +282,6 @@ export function simulateBatch(
   seed: number,
   cpuSkill: CpuSkill = "level1",
 ): BatchResult {
-  let playerWins = 0;
-  let opponentWins = 0;
-  let turns = 0;
-  const aggregate = new Map<string, Contribution>();
   const results: MatchResult[] = [];
 
   for (let i = 0; i < games; i++) {
@@ -288,45 +291,71 @@ export function simulateBatch(
       firstPlayer: i % 2 === 0 ? "player" : "opponent",
     });
     results.push(result);
+  }
+
+  const summary = summarizePracticeMatches(results, playerDeck);
+  summary.metrics.ablation = estimateAblations(
+    playerDeck,
+    opponentDeck,
+    summary.topContributors,
+    games,
+    seed,
+    cpuSkill,
+    summary.playerWinRate,
+  );
+
+  return summary;
+}
+
+/**
+ * Reuse the Practice analysis pipeline for an explicit match schedule.
+ * Benchmark callers can retain only a small replay sample while keeping the
+ * same deterministic metrics used by the existing batch UI.
+ */
+export function summarizePracticeMatches(
+  results: MatchResult[],
+  playerDeck: PracticeDeck,
+  options: PracticeMatchSummaryOptions = {},
+): BatchResult {
+  let playerWins = 0;
+  let turns = 0;
+  const aggregate = new Map<string, Contribution>();
+
+  for (const result of results) {
     turns += result.turns;
     if (result.winner === "player") playerWins++;
-    else opponentWins++;
-    for (const c of result.contributions) {
-      const key = `${c.side}:${c.cardId}`;
+    for (const contribution of result.contributions) {
+      const key = `${contribution.side}:${contribution.cardId}`;
       const existing = aggregate.get(key);
       aggregate.set(key, {
-        cardId: c.cardId,
-        name: c.name,
-        side: c.side,
-        impact: round1((existing?.impact ?? 0) + c.impact),
-        appearances: (existing?.appearances ?? 0) + c.appearances,
+        cardId: contribution.cardId,
+        name: contribution.name,
+        side: contribution.side,
+        impact: round1((existing?.impact ?? 0) + contribution.impact),
+        appearances:
+          (existing?.appearances ?? 0) + contribution.appearances,
       });
     }
   }
 
-  const topContributors = [...aggregate.values()]
-    .sort((a, b) => b.impact - a.impact)
-    .slice(0, 8);
-  const metrics = analyzeResults(results, playerDeck);
-  metrics.ablation = estimateAblations(
-    playerDeck,
-    opponentDeck,
-    topContributors,
-    games,
-    seed,
-    cpuSkill,
-    games === 0 ? 0 : playerWins / games,
+  const games = results.length;
+  const replaySampleSize = Math.max(
+    0,
+    Math.min(games, options.replaySampleSize ?? games),
   );
-
   return {
     games,
     playerWins,
-    opponentWins,
+    opponentWins: games - playerWins,
     playerWinRate: games === 0 ? 0 : playerWins / games,
     avgTurns: games === 0 ? 0 : round1(turns / games),
-    topContributors,
-    metrics,
-    replays: results.map((result) => result.replay),
+    topContributors: [...aggregate.values()]
+      .sort((a, b) => b.impact - a.impact)
+      .slice(0, options.topContributorLimit ?? 8),
+    metrics: analyzeResults(results, playerDeck),
+    replays: results
+      .slice(0, replaySampleSize)
+      .map((result) => result.replay),
   };
 }
 

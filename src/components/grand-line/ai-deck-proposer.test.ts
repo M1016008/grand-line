@@ -95,6 +95,8 @@ test("compare UI renders three profile cards, details, and draft apply actions",
   assert.match(component, /枚数を増やした主なカード/);
   assert.match(component, /高い数値が構築の優劣を決めるものではありません/);
   assert.match(component, /この構築を下書きに反映/);
+  assert.match(component, /DeckBattleBenchmark/);
+  assert.match(component, /personalityByProfile=\{VARIANT_PERSONALITY_JA\}/);
   assert.match(component, /onClick=\{\(\) => onApply\(variant\)\}/);
   assert.match(component, /applyDeckCopyEntries\(target\.cards, poolById, replace\)/);
   assert.match(component, /提案カードを下書きへ反映できませんでした/);
