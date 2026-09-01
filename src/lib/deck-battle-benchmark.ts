@@ -14,6 +14,7 @@ import {
   type RuleViolation,
 } from "@/lib/deck-rules";
 import type {
+  CardTimingStat,
   CpuSkill,
   GameReplayLog,
   PracticeSide,
@@ -34,6 +35,7 @@ export const BENCHMARK_SIZE_OPTIONS = [
 ] as const;
 
 export const BENCHMARK_SERVER_MAX_GAMES = 10_000;
+export const BENCHMARK_SERVER_MAX_TURNS = 100;
 export const BENCHMARK_DEFAULT_BASE_SEED = 1_001;
 export const BENCHMARK_SEED_STEP = 97;
 export const BENCHMARK_DEFAULT_MAX_TURNS = 10;
@@ -251,6 +253,15 @@ export function buildPairedBenchmarkSchedule(
   const baseSeed = options.baseSeed ?? BENCHMARK_DEFAULT_BASE_SEED;
   const seedStep = options.seedStep ?? BENCHMARK_SEED_STEP;
   const maxTurns = options.maxTurns ?? BENCHMARK_DEFAULT_MAX_TURNS;
+  if (
+    !Number.isInteger(maxTurns) ||
+    maxTurns < 1 ||
+    maxTurns > BENCHMARK_SERVER_MAX_TURNS
+  ) {
+    throw new RangeError(
+      `Benchmark maxTurns must be between 1 and ${BENCHMARK_SERVER_MAX_TURNS}.`,
+    );
+  }
   return Array.from({ length: games }, (_, gameIndex) => ({
     gameIndex,
     seed: baseSeed + gameIndex * seedStep,
@@ -309,8 +320,7 @@ export interface BenchmarkOpponentDescriptor {
   synthetic: boolean;
 }
 
-export interface BenchmarkVariantMetrics {
-  variantProfile: VariantProfile;
+export interface BenchmarkDeckMetrics {
   games: number;
   heuristicWins: number;
   heuristicWinRate: number;
@@ -327,6 +337,20 @@ export interface BenchmarkVariantMetrics {
   winReasons: Record<WinReason, number>;
   topContributors: Contribution[];
   replaySamples: GameReplayLog[];
+}
+
+export interface BenchmarkVariantMetrics extends BenchmarkDeckMetrics {
+  variantProfile: VariantProfile;
+}
+
+export interface ScheduledDeckBenchmarkResult {
+  metrics: BenchmarkDeckMetrics;
+  /** One boolean per schedule index; true means the player deck won. */
+  outcomes: boolean[];
+  evidence: {
+    playerContributions: Contribution[];
+    cardTiming: CardTimingStat[];
+  };
 }
 
 export interface RelativeBenchmarkMetrics {
@@ -385,45 +409,45 @@ interface BenchmarkRunOptions {
   replaySampleSize?: number;
 }
 
-interface BenchmarkDependencies {
+export interface BenchmarkDependencies {
   simulate: typeof simulateMatch;
 }
 
-export function runPairedDeckBenchmark(
-  options: BenchmarkRunOptions,
+export function runDeckOnBenchmarkSchedule(
+  options: {
+    deck: PracticeDeck;
+    opponentDeck: PracticeDeck;
+    schedule: BenchmarkScheduleEntry[];
+    replaySampleSize?: number;
+    topContributorLimit?: number;
+  },
   dependencies: BenchmarkDependencies = { simulate: simulateMatch },
-): DeckBattleBenchmarkResult {
-  assertThreeProfiles(options.variants);
-  const schedule = buildPairedBenchmarkSchedule(options.games, {
-    baseSeed: options.baseSeed,
-    seedStep: options.seedStep,
-    cpuSkill: options.cpuSkill,
-    maxTurns: options.maxTurns,
+): ScheduledDeckBenchmarkResult {
+  if (options.schedule.length < 1) {
+    throw new RangeError("Benchmark schedule must contain at least one game.");
+  }
+  const matches = options.schedule.map((scheduled) =>
+    dependencies.simulate(options.deck, options.opponentDeck, {
+      seed: scheduled.seed,
+      cpuSkill: scheduled.cpuSkill,
+      firstPlayer: scheduled.firstPlayer,
+      maxTurns: scheduled.maxTurns,
+    }),
+  );
+  const summary = summarizePracticeMatches(matches, options.deck, {
+    replaySampleSize:
+      options.replaySampleSize ?? BENCHMARK_REPLAY_SAMPLE_SIZE,
+    topContributorLimit: Number.MAX_SAFE_INTEGER,
   });
-  const outcomes = emptyOutcomeMap();
-  const variantEntries = options.variants.map(({ variantProfile, deck }) => {
-    const matches = schedule.map((scheduled) =>
-      dependencies.simulate(deck, options.opponentDeck, {
-        seed: scheduled.seed,
-        cpuSkill: scheduled.cpuSkill,
-        firstPlayer: scheduled.firstPlayer,
-        maxTurns: scheduled.maxTurns,
-      }),
-    );
-    outcomes[variantProfile] = matches.map(
-      (match) => match.winner === "player",
-    );
-    const summary = summarizePracticeMatches(matches, deck, {
-      replaySampleSize:
-        options.replaySampleSize ?? BENCHMARK_REPLAY_SAMPLE_SIZE,
-      topContributorLimit: Number.MAX_SAFE_INTEGER,
-    });
-    const winReasons = emptyWinReasons();
-    for (const match of matches) {
-      if (match.winner === "player") winReasons[match.reason] += 1;
-    }
-    const metrics: BenchmarkVariantMetrics = {
-      variantProfile,
+  const winReasons = emptyWinReasons();
+  for (const match of matches) {
+    if (match.winner === "player") winReasons[match.reason] += 1;
+  }
+  const playerContributions = summary.topContributors.filter(
+    (contribution) => contribution.side === "player",
+  );
+  return {
+    metrics: {
       games: summary.games,
       heuristicWins: summary.playerWins,
       heuristicWinRate: summary.playerWinRate,
@@ -441,10 +465,49 @@ export function runPairedDeckBenchmark(
       mulliganRedrawWinRate: summary.metrics.mulliganRedrawWinRate,
       counterOverflowOnLoss: summary.metrics.counterOverflowOnLoss,
       winReasons,
-      topContributors: summary.topContributors
-        .filter((contribution) => contribution.side === "player")
-        .slice(0, 5),
+      topContributors: playerContributions.slice(
+        0,
+        options.topContributorLimit ?? 5,
+      ),
       replaySamples: summary.replays ?? [],
+    },
+    outcomes: matches.map((match) => match.winner === "player"),
+    evidence: {
+      playerContributions,
+      cardTiming: summary.metrics.cardTiming.filter(
+        (timing) => timing.side === "player",
+      ),
+    },
+  };
+}
+
+export function runPairedDeckBenchmark(
+  options: BenchmarkRunOptions,
+  dependencies: BenchmarkDependencies = { simulate: simulateMatch },
+): DeckBattleBenchmarkResult {
+  assertThreeProfiles(options.variants);
+  const schedule = buildPairedBenchmarkSchedule(options.games, {
+    baseSeed: options.baseSeed,
+    seedStep: options.seedStep,
+    cpuSkill: options.cpuSkill,
+    maxTurns: options.maxTurns,
+  });
+  const outcomes = emptyOutcomeMap();
+  const variantEntries = options.variants.map(({ variantProfile, deck }) => {
+    const scheduledResult = runDeckOnBenchmarkSchedule(
+      {
+        deck,
+        opponentDeck: options.opponentDeck,
+        schedule,
+        replaySampleSize:
+          options.replaySampleSize ?? BENCHMARK_REPLAY_SAMPLE_SIZE,
+      },
+      dependencies,
+    );
+    outcomes[variantProfile] = scheduledResult.outcomes;
+    const metrics: BenchmarkVariantMetrics = {
+      variantProfile,
+      ...scheduledResult.metrics,
     };
     return [variantProfile, metrics] as const;
   });

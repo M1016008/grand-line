@@ -98,7 +98,7 @@ test("compare UI renders three profile cards, details, and draft apply actions",
   assert.match(component, /DeckBattleBenchmark/);
   assert.match(component, /personalityByProfile=\{VARIANT_PERSONALITY_JA\}/);
   assert.match(component, /onClick=\{\(\) => onApply\(variant\)\}/);
-  assert.match(component, /applyDeckCopyEntries\(target\.cards, poolById, replace\)/);
+  assert.match(component, /applyDeckCopyEntries\(entries, poolById, replace\)/);
   assert.match(component, /提案カードを下書きへ反映できませんでした/);
   assert.match(component, /catch \{/);
   assert.doesNotMatch(component, /metrics\.composite|label: "Composite"/);

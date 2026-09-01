@@ -37,6 +37,7 @@ import {
 import {
   applyDeckCopyEntries,
   DECK_INTELLIGENCE_GENERATION_MODES,
+  type DeckCopyEntry,
   type DeckIntelligenceGenerationMode,
   type VariantMetricSummary,
 } from "@/lib/deck-intelligence-compare";
@@ -128,15 +129,21 @@ export function AiDeckProposer({
     });
   }
 
-  function applyProposal(target: DeckSuggestion) {
+  function applyCards(entries: DeckCopyEntry[]): boolean {
     setApplyError(null);
     try {
-      applyDeckCopyEntries(target.cards, poolById, replace);
+      applyDeckCopyEntries(entries, poolById, replace);
+      return true;
     } catch {
       setApplyError(
         "提案カードを下書きへ反映できませんでした。提案を再生成してください。",
       );
+      return false;
     }
+  }
+
+  function applyProposal(target: DeckSuggestion) {
+    applyCards(target.cards);
   }
 
   return (
@@ -301,6 +308,7 @@ export function AiDeckProposer({
             leader={leader}
             pool={pool}
             onApply={applyProposal}
+            onApplyCards={applyCards}
           />
         ) : null}
 
@@ -488,12 +496,14 @@ function DeckVariantsView({
   leader,
   pool,
   onApply,
+  onApplyCards,
 }: {
   response: DeckVariantsSuggestion;
   poolById: Map<string, CardListItem>;
   leader: CardListItem;
   pool: CardListItem[];
   onApply: (proposal: DeckSuggestion) => void;
+  onApplyCards: (cards: DeckCopyEntry[]) => boolean;
 }) {
   const [showDetails, setShowDetails] = useState(false);
   const byProfile = new Map(
@@ -636,6 +646,7 @@ function DeckVariantsView({
         leader={leader}
         pool={pool}
         personalityByProfile={VARIANT_PERSONALITY_JA}
+        onApplyCards={onApplyCards}
       />
     </div>
   );
