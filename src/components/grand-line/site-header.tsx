@@ -24,18 +24,25 @@ const DATA_NAV: { href: `/${string}`; label: string }[] = [
   { href: "/regulations", label: "禁止/制限" },
 ];
 
+export function isNavigationPathActive(
+  pathname: string,
+  href: `/${string}`,
+): boolean {
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
+
 export function SiteHeader() {
   const pathname = usePathname();
 
   const isActive = (item: MainNavItem) =>
     item.matchPrefixes.some((prefix) =>
-      pathname === prefix || pathname.startsWith(`${prefix}/`),
+      isNavigationPathActive(pathname, prefix),
     );
 
-  const isDataActive =
-    pathname === "/sets" ||
-    pathname.startsWith("/synergy") ||
-    pathname.startsWith("/regulations");
+  const isDataItemActive = (href: `/${string}`) =>
+    isNavigationPathActive(pathname, href);
+
+  const isDataActive = DATA_NAV.some((item) => isDataItemActive(item.href));
 
   return (
     <header className="border-border/40 sticky top-0 z-30 w-full border-b backdrop-blur supports-[backdrop-filter]:bg-background/70">
@@ -48,32 +55,41 @@ export function SiteHeader() {
             ONE PIECE TCG COMPASS
           </span>
         </Link>
-        <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto text-sm" aria-label="グローバルナビゲーション">
-          {PRIMARY_NAV.map((item) => {
-            const active = isActive(item);
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={cn(
-                  "hover:bg-accent/50 hover:text-foreground shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 transition",
-                  active
-                    ? "text-foreground bg-accent/40 font-semibold"
-                    : "text-muted-foreground",
-                )}
-                aria-current={active ? "page" : undefined}
-              >
-                {item.label}
-              </Link>
-            );
-          })}
+        <nav
+          className="flex min-w-0 flex-1 items-center gap-1 text-sm"
+          aria-label="グローバルナビゲーション"
+        >
+          <div
+            data-primary-navigation-scroll
+            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+          >
+            {PRIMARY_NAV.map((item) => {
+              const active = isActive(item);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={cn(
+                    "hover:bg-accent/50 hover:text-foreground shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 transition",
+                    active
+                      ? "text-foreground bg-accent/40 font-semibold"
+                      : "text-muted-foreground",
+                  )}
+                  aria-current={active ? "page" : undefined}
+                >
+                  {item.label}
+                </Link>
+              );
+            })}
+          </div>
 
-          <details className="relative sm:max-w-52">
+          <details data-data-navigation-menu className="relative shrink-0">
             <summary
               className={cn(
                 "hover:bg-accent/50 hover:text-foreground list-none cursor-pointer shrink-0 rounded-md px-3 py-1.5 text-muted-foreground transition",
                 isDataActive ? "text-foreground bg-accent/40 font-semibold" : "",
               )}
+              aria-current={isDataActive ? "page" : undefined}
             >
               データ
             </summary>
@@ -84,11 +100,11 @@ export function SiteHeader() {
                   href={item.href}
                   className={cn(
                     "hover:bg-accent/50 block rounded-sm px-3 py-1.5 text-sm transition",
-                    pathname === item.href
+                    isDataItemActive(item.href)
                       ? "bg-accent/40 font-semibold"
                       : "text-muted-foreground",
                   )}
-                  aria-current={pathname === item.href ? "page" : undefined}
+                  aria-current={isDataItemActive(item.href) ? "page" : undefined}
                 >
                   {item.label}
                 </Link>

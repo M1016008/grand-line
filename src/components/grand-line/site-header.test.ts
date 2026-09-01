@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { isNavigationPathActive } from "./site-header";
+
 async function source(...segments: string[]): Promise<string> {
   return readFile(path.join(process.cwd(), ...segments), "utf8");
 }
@@ -59,4 +61,51 @@ test("mobile header remains usable", async () => {
   assert.match(header, /overflow-x-auto/);
   assert.match(header, /sticky top-0/);
   assert.match(header, /details /);
+});
+
+test("data dropdown is outside the horizontally scrollable primary navigation", async () => {
+  const header = await source(
+    "src",
+    "components",
+    "grand-line",
+    "site-header.tsx",
+  );
+
+  const primaryScroll = header.indexOf("data-primary-navigation-scroll");
+  const primaryScrollEnd = header.indexOf("</div>", primaryScroll);
+  const dataMenu = header.indexOf("data-data-navigation-menu");
+
+  assert.notEqual(primaryScroll, -1);
+  assert.notEqual(primaryScrollEnd, -1);
+  assert.ok(dataMenu > primaryScrollEnd);
+  assert.match(
+    header.slice(primaryScroll, primaryScrollEnd),
+    /overflow-x-auto/,
+  );
+  assert.doesNotMatch(header.slice(dataMenu), /overflow-x-auto/);
+});
+
+test("data navigation remains active for all data routes", async () => {
+  const header = await source(
+    "src",
+    "components",
+    "grand-line",
+    "site-header.tsx",
+  );
+
+  for (const route of ["/sets", "/synergy", "/regulations"] as const) {
+    assert.equal(isNavigationPathActive(route, route), true);
+  }
+  assert.equal(isNavigationPathActive("/synergy/OP01-001", "/synergy"), true);
+  assert.equal(isNavigationPathActive("/cards", "/sets"), false);
+
+  assert.match(header, /const isDataItemActive/);
+  assert.match(header, /DATA_NAV\.some\(\(item\) => isDataItemActive\(item\.href\)\)/);
+  assert.match(header, /isNavigationPathActive\(pathname, href\)/);
+  assert.match(header, /aria-current=\{isDataActive \? "page" : undefined\}/);
+  assert.ok(header.includes('{ href: "/sets", label: "セット" }'));
+  assert.ok(header.includes('{ href: "/synergy", label: "シナジー" }'));
+  assert.ok(
+    header.includes('{ href: "/regulations", label: "禁止/制限" }'),
+  );
 });
