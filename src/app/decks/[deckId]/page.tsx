@@ -36,21 +36,19 @@ export default async function SavedDeckPage({ params }: PageProps) {
       <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 py-8">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
-            <p className="text-primary/80 text-xs tracking-[0.4em] uppercase">
-              Saved Deck
-            </p>
+            <p className="text-primary/80 text-xs tracking-[0.4em] uppercase">保存デッキ</p>
             <h1 className="font-display text-3xl tracking-wide">{deck.name}</h1>
             <div className="text-muted-foreground mt-2 flex flex-wrap items-center gap-2 text-sm">
-              <span className="font-mono">{deck.totalCards} cards</span>
+              <span className="font-mono">{deck.totalCards}枚</span>
               <span>{deck.format}</span>
               <Badge variant={deck.ruleReport.legal ? "secondary" : "destructive"}>
-                {deck.ruleReport.legal ? "Legal" : "Illegal"}
+                {deck.ruleReport.legal ? "合法" : "要修正"}
               </Badge>
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
             <Button asChild variant="outline">
-              <Link href="/decks/new">New deck</Link>
+              <Link href="/decks/new">新しいデッキ</Link>
             </Button>
             <Button asChild>
               <a
@@ -58,7 +56,7 @@ export default async function SavedDeckPage({ params }: PageProps) {
                 target="_blank"
                 rel="noreferrer"
               >
-                Print PDF
+                印刷用PDF
               </a>
             </Button>
           </div>
@@ -101,7 +99,7 @@ export default async function SavedDeckPage({ params }: PageProps) {
           <Card className="border-border/40 bg-card/40">
             <CardContent className="p-4">
               <div className="mb-3 flex items-baseline justify-between">
-                <h2 className="font-display text-xl tracking-wide">Main Deck</h2>
+                <h2 className="font-display text-xl tracking-wide">メインデッキ</h2>
                 <span className="text-muted-foreground font-mono text-sm">
                   {deck.totalCards}/50
                 </span>

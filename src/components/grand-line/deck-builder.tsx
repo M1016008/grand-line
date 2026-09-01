@@ -196,279 +196,294 @@ export function DeckBuilder({
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
         {/* Card pool */}
         <section className="min-w-0 space-y-3">
-        <div className="flex items-baseline justify-between gap-3">
-          <h2 className="font-display text-xl tracking-wide">候補カード</h2>
-          <span className="text-muted-foreground text-xs">
-            {filtered.length} 件 (リーダー色フィルタ適用済み)
-          </span>
-        </div>
-        <Input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="名前 / 特徴 / ID で検索"
-        />
-        <ScrollArea className="border-border/40 bg-card/30 h-[60vh] rounded-lg border p-2">
-          <ul className="grid gap-1.5">
-            {filtered.map((c) => {
-              const count = entries[c.id]?.count ?? 0;
-              const max = perCardMaxMap.get(c.id);
-              const banned = max === 0;
-              return (
-                <li
-                  key={c.id}
-                  className={cn(
-                    "border-border/30 hover:bg-accent/30 flex items-center gap-3 rounded-md border bg-background/40 px-2 py-1.5",
-                    banned && "opacity-50",
-                  )}
-                >
-                  <div className="border-border/30 bg-card/60 relative aspect-[3/4] w-9 shrink-0 overflow-hidden rounded-sm border">
-                    {c.imageUrlJp ? (
-                      /* eslint-disable-next-line @next/next/no-img-element */
-                      <img
-                        src={proxiedCardImage(c.imageUrlJp)!}
-                        alt={c.name}
-                        loading="lazy"
-                        className="h-full w-full object-cover"
-                      />
-                    ) : null}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-muted-foreground font-mono text-[11px]">
-                        {c.id}
-                      </span>
-                      {c.colors.map((col) => (
-                        <ColorChip key={col} color={col} />
-                      ))}
-                      {typeof max === "number" ? (
-                        <RestrictionBadge maxCopies={max} size="sm" />
-                      ) : null}
-                    </div>
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className="truncate font-medium">{c.name}</span>
-                      <span className="text-muted-foreground font-mono text-xs">
-                        {c.cost !== null ? `c${c.cost}` : ""}
-                        {c.power !== null ? ` p${c.power}` : ""}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => remove(c.id)}
-                      disabled={count === 0}
-                    >
-                      −
-                    </Button>
-                    <span className="w-7 text-center font-mono text-sm tabular-nums">
-                      {count}
-                    </span>
-                    <Button
-                      type="button"
-                      size="sm"
-                      onClick={() => add(c)}
-                      disabled={count >= 4}
-                    >
-                      +
-                    </Button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-          {filtered.length === 0 ? (
-            <p className="text-muted-foreground p-6 text-center text-sm">
-              候補が見つかりません。
-            </p>
-          ) : null}
-        </ScrollArea>
-        </section>
-
-        {/* Right column: leader summary + draft */}
-        <aside className="min-w-0 space-y-4">
-        <Card className="border-primary/30 bg-card/60">
-          <CardContent className="space-y-2 p-4">
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-muted-foreground font-mono text-[11px] tracking-widest uppercase">
-                  Leader · {leader.id}
-                </p>
-                <p className="text-base font-semibold">{leader.name}</p>
-              </div>
-              <div className="flex flex-wrap gap-1">
-                {leader.colors.map((c) => (
-                  <ColorChip key={c} color={c} />
-                ))}
-              </div>
-            </div>
-            <div className="text-muted-foreground flex flex-wrap gap-2 text-[11px]">
-              {leader.life !== null ? <span>life {leader.life}</span> : null}
-              {leader.power !== null ? <span>pwr {leader.power}</span> : null}
-              {leader.features.slice(0, 4).map((f) => (
-                <Badge key={f} variant="secondary" className="text-[10px]">
-                  {f}
-                </Badge>
-              ))}
-            </div>
-            <SourceBadge source={leader.source} verified={leader.verified} />
-          </CardContent>
-        </Card>
-
-        {/* Counter + curve */}
-        <Card className="border-border/40 bg-card/40">
-          <CardContent className="space-y-3 p-4">
-            <div className="flex items-baseline justify-between">
-              <span className="text-muted-foreground text-[11px] tracking-widest uppercase">
-                デッキ枚数
-              </span>
-              <span
-                className={cn(
-                  "font-mono text-2xl tabular-nums",
-                  total === TARGET
-                    ? "text-source-verified"
-                    : total > TARGET
-                      ? "text-destructive"
-                      : "text-foreground",
-                )}
-              >
-                {total} / {TARGET}
-              </span>
-            </div>
-            <Separator />
-            <div>
-              <p className="text-muted-foreground mb-1 text-[11px] tracking-widest uppercase">
-                コストカーブ
-              </p>
-              <CostCurveBars curve={curve} />
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card id="deck-save" className="border-border/40 bg-card/40">
-          <CardContent className="space-y-3 p-4">
-            <div>
-              <label
-                htmlFor="deck-name"
-                className="text-muted-foreground text-[11px] tracking-widest uppercase"
-              >
-                Save deck
-              </label>
-              <Input
-                id="deck-name"
-                value={deckName}
-                onChange={(event) => setDeckName(event.target.value)}
-                placeholder={`${leader.name} deck`}
-                maxLength={80}
-              />
-            </div>
-            <Button
-              type="button"
-              onClick={saveDeck}
-              disabled={saveDisabled}
-              className="w-full"
-            >
-              <Save aria-hidden="true" />
-              Save
-            </Button>
-            {saveState.message ? (
-              <p
-                className={cn(
-                  "text-xs",
-                  saveState.status === "error"
-                    ? "text-destructive"
-                    : "text-muted-foreground",
-                )}
-              >
-                {saveState.message}
-              </p>
-            ) : usingMock ? (
-              <p className="text-muted-foreground text-xs">
-                Saving is disabled while the builder is using mock card data.
-              </p>
-            ) : !report.legal ? (
-              <p className="text-muted-foreground text-xs">
-                Legal 50-card decks can be saved for printing.
-              </p>
-            ) : null}
-          </CardContent>
-        </Card>
-
-        <RuleReport violations={report.violations} legal={report.legal} />
-
-        {/* 5-metric radar */}
-        <Card className="border-border/40 bg-card/40">
-          <CardContent className="space-y-3 p-4">
-            <div className="flex items-baseline justify-between">
-              <h3 className="font-display text-sm tracking-wide">評価指標</h3>
-              <span className="text-muted-foreground text-[10px] tracking-widest uppercase">
-                Phase 3
-              </span>
-            </div>
-            <DeckRadar evaluation={evaluation} />
-          </CardContent>
-        </Card>
-
-        {/* Probability turn chart */}
-        <ProbabilityPanel entries={sortedEntries} />
-
-        {/* Current draft */}
-        <Card className="border-border/40 bg-card/40">
-          <CardContent className="space-y-2 p-4">
-            <div className="flex items-baseline justify-between">
-              <h3 className="font-display text-sm tracking-wide">下書き</h3>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => clear()}
-                disabled={total === 0}
-                className="text-muted-foreground hover:text-destructive"
-              >
-                クリア
-              </Button>
-            </div>
-            <ScrollArea className="h-72">
-              <ul className="space-y-1">
-                {sortedEntries.map(({ card, count }) => (
+          <div className="flex items-baseline justify-between gap-3">
+            <h2 className="font-display text-xl tracking-wide">候補カード</h2>
+            <span className="text-muted-foreground text-xs">
+              {filtered.length} 件 (リーダー色フィルタ適用済み)
+            </span>
+          </div>
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="名前 / 特徴 / ID で検索"
+          />
+          <ScrollArea className="border-border/40 bg-card/30 h-[60vh] rounded-lg border p-2">
+            <ul className="grid gap-1.5">
+              {filtered.map((c) => {
+                const count = entries[c.id]?.count ?? 0;
+                const max = perCardMaxMap.get(c.id);
+                const banned = max === 0;
+                return (
                   <li
-                    key={card.id}
-                    className="hover:bg-accent/30 flex items-center gap-2 rounded-md px-2 py-1 text-xs"
+                    key={c.id}
+                    className={cn(
+                      "border-border/30 hover:bg-accent/30 flex items-center gap-3 rounded-md border bg-background/40 px-2 py-1.5",
+                      banned && "opacity-50",
+                    )}
                   >
-                    <div className="border-border/30 bg-card/60 relative aspect-[3/4] w-6 shrink-0 overflow-hidden rounded-sm border">
-                      {card.imageUrlJp ? (
+                    <div className="border-border/30 bg-card/60 relative aspect-[3/4] w-9 shrink-0 overflow-hidden rounded-sm border">
+                      {c.imageUrlJp ? (
                         /* eslint-disable-next-line @next/next/no-img-element */
                         <img
-                          src={proxiedCardImage(card.imageUrlJp)!}
-                          alt=""
+                          src={proxiedCardImage(c.imageUrlJp)!}
+                          alt={c.name}
                           loading="lazy"
                           className="h-full w-full object-cover"
                         />
                       ) : null}
                     </div>
-                    <span className="text-muted-foreground font-mono">
-                      {card.cost !== null ? `c${card.cost}` : "  "}
-                    </span>
-                    <span className="flex-1 truncate">{card.name}</span>
-                    <span className="font-mono">×{count}</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-muted-foreground font-mono text-[11px]">
+                          {c.id}
+                        </span>
+                        {c.colors.map((col) => (
+                          <ColorChip key={col} color={col} />
+                        ))}
+                        {typeof max === "number" ? (
+                          <RestrictionBadge maxCopies={max} size="sm" />
+                        ) : null}
+                      </div>
+                      <div className="flex items-center gap-2 text-sm">
+                        <span className="truncate font-medium">{c.name}</span>
+                        <span className="text-muted-foreground font-mono text-xs">
+                          {c.cost !== null ? `c${c.cost}` : ""}
+                          {c.power !== null ? ` p${c.power}` : ""}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => remove(c.id)}
+                        disabled={count === 0}
+                      >
+                        −
+                      </Button>
+                      <span className="w-7 text-center font-mono text-sm tabular-nums">
+                        {count}
+                      </span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => add(c)}
+                        disabled={count >= 4}
+                      >
+                        +
+                      </Button>
+                    </div>
                   </li>
-                ))}
-              </ul>
-              {sortedEntries.length === 0 ? (
-                <p className="text-muted-foreground p-4 text-center text-xs">
-                  まだ何も追加していません。
+                );
+              })}
+            </ul>
+            {filtered.length === 0 ? (
+              <p className="text-muted-foreground p-6 text-center text-sm">
+                候補が見つかりません。
+              </p>
+            ) : null}
+          </ScrollArea>
+        </section>
+
+        {/* Right column: draft-first hierarchy */}
+        <aside className="min-w-0 space-y-4">
+          {/* Current draft / legality */}
+          <Card className="border-border/40 bg-card/40">
+            <CardContent className="space-y-2 p-4">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-display text-sm tracking-wide">現在の下書き</h3>
+                    <span
+                      className={cn(
+                        "rounded-full border px-2 py-0.5 text-[10px] font-semibold tracking-wider uppercase",
+                        report.legal
+                          ? "border-source-verified/40 text-source-verified bg-source-verified/10"
+                          : "border-destructive/40 text-destructive bg-destructive/10",
+                      )}
+                    >
+                      {report.legal ? "合法" : "要修正"}
+                    </span>
+                  </div>
+                  <p className="text-muted-foreground text-[11px]">
+                    合法性と50枚状態を同時に確認できます。
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => clear()}
+                  disabled={total === 0}
+                  className="text-muted-foreground hover:text-destructive"
+                >
+                  クリア
+                </Button>
+              </div>
+
+              <div className="flex items-baseline justify-between">
+                <span className="text-muted-foreground text-[11px] tracking-widest uppercase">
+                  デッキ枚数
+                </span>
+                <span
+                  className={cn(
+                    "font-mono text-2xl tabular-nums",
+                    total === TARGET
+                      ? "text-source-verified"
+                      : total > TARGET
+                        ? "text-destructive"
+                        : "text-foreground",
+                  )}
+                >
+                  {total} / {TARGET}
+                </span>
+              </div>
+              <Separator />
+              <p className="text-muted-foreground mb-1 text-[11px] tracking-widest uppercase">
+                コストカーブ
+              </p>
+              <CostCurveBars curve={curve} />
+              <ScrollArea className="h-56">
+                <ul className="space-y-1">
+                  {sortedEntries.map(({ card, count }) => (
+                    <li
+                      key={card.id}
+                      className="hover:bg-accent/30 flex items-center gap-2 rounded-md px-2 py-1 text-xs"
+                    >
+                      <div className="border-border/30 bg-card/60 relative aspect-[3/4] w-6 shrink-0 overflow-hidden rounded-sm border">
+                        {card.imageUrlJp ? (
+                          /* eslint-disable-next-line @next/next/no-img-element */
+                          <img
+                            src={proxiedCardImage(card.imageUrlJp)!}
+                            alt=""
+                            loading="lazy"
+                            className="h-full w-full object-cover"
+                          />
+                        ) : null}
+                      </div>
+                      <span className="text-muted-foreground font-mono">
+                        {card.cost !== null ? `c${card.cost}` : "  "}
+                      </span>
+                      <span className="flex-1 truncate">{card.name}</span>
+                      <span className="font-mono">×{count}</span>
+                    </li>
+                  ))}
+                </ul>
+                {sortedEntries.length === 0 ? (
+                  <p className="text-muted-foreground p-4 text-center text-xs">
+                    まだ何も追加していません。
+                  </p>
+                ) : null}
+              </ScrollArea>
+            </CardContent>
+          </Card>
+
+          {/* Save */}
+          <Card id="deck-save" className="border-border/40 bg-card/40">
+            <CardContent className="space-y-3 p-4">
+              <div>
+                <label
+                  htmlFor="deck-name"
+                  className="text-muted-foreground text-[11px] tracking-widest uppercase"
+                >
+                  Save deck
+                </label>
+                <Input
+                  id="deck-name"
+                  value={deckName}
+                  onChange={(event) => setDeckName(event.target.value)}
+                  placeholder={`${leader.name} deck`}
+                  maxLength={80}
+                />
+              </div>
+              <Button
+                type="button"
+                onClick={saveDeck}
+                disabled={saveDisabled}
+                className="w-full"
+              >
+                <Save aria-hidden="true" />
+                Save
+              </Button>
+              {saveState.message ? (
+                <p
+                  className={cn(
+                    "text-xs",
+                    saveState.status === "error"
+                      ? "text-destructive"
+                      : "text-muted-foreground",
+                  )}
+                >
+                  {saveState.message}
+                </p>
+              ) : usingMock ? (
+                <p className="text-muted-foreground text-xs">
+                  Saving is disabled while the builder is using mock card data.
+                </p>
+              ) : !report.legal ? (
+                <p className="text-muted-foreground text-xs">
+                  Legal 50-card decks can be saved for printing.
                 </p>
               ) : null}
-            </ScrollArea>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
 
-        {usingMock ? (
-          <p className="text-source-unverified text-[11px]">
-            ※ モックデータで構築中。実カードでの構築はスクレイプ後に有効化されます。
-          </p>
-        ) : null}
+          <Card className="border-primary/30 bg-card/60">
+            <CardContent className="space-y-2 p-4">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-muted-foreground font-mono text-[11px] tracking-widest uppercase">
+                    Leader · {leader.id}
+                  </p>
+                  <p className="text-base font-semibold">{leader.name}</p>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {leader.colors.map((c) => (
+                    <ColorChip key={c} color={c} />
+                  ))}
+                </div>
+              </div>
+              <div className="text-muted-foreground flex flex-wrap gap-2 text-[11px]">
+                {leader.life !== null ? <span>life {leader.life}</span> : null}
+                {leader.power !== null ? <span>pwr {leader.power}</span> : null}
+                {leader.features.slice(0, 4).map((f) => (
+                  <Badge key={f} variant="secondary" className="text-[10px]">
+                    {f}
+                  </Badge>
+                ))}
+              </div>
+              <SourceBadge source={leader.source} verified={leader.verified} />
+            </CardContent>
+          </Card>
+
+          <RuleReport violations={report.violations} legal={report.legal} />
+
+          <details className="border-border/40 bg-card/40 border rounded-md">
+            <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold tracking-wide">
+              詳細分析
+            </summary>
+
+            <div className="space-y-4 border-t border-border/40 p-4">
+              {/* 5-metric radar */}
+              <Card className="border-border/40 bg-card/40">
+                <CardContent className="space-y-3 p-4">
+                  <div className="flex items-baseline justify-between">
+                    <h3 className="font-display text-sm tracking-wide">評価指標</h3>
+                  </div>
+                  <DeckRadar evaluation={evaluation} />
+                </CardContent>
+              </Card>
+
+              <ProbabilityPanel entries={sortedEntries} />
+            </div>
+          </details>
+
+          {usingMock ? (
+            <p className="text-source-unverified text-[11px]">
+              ※ モックデータで構築中。実カードでの構築はスクレイプ後に有効化されます。
+            </p>
+          ) : null}
         </aside>
       </div>
 

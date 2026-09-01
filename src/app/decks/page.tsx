@@ -20,12 +20,12 @@ export default async function DecksIndexPage() {
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <p className="text-primary/80 text-xs tracking-[0.4em] uppercase">
-              Deck Library
+              保存デッキ
             </p>
-            <h1 className="font-display text-3xl tracking-wide">Saved decks</h1>
+            <h1 className="font-display text-3xl tracking-wide">保存デッキ</h1>
           </div>
           <Button asChild>
-            <Link href="/decks/new">New deck</Link>
+            <Link href="/decks/new">新しいデッキ</Link>
           </Button>
         </div>
 
@@ -70,7 +70,7 @@ export default async function DecksIndexPage() {
                     </Link>
                     <div className="flex shrink-0 gap-2">
                       <Button asChild variant="outline" size="sm">
-                        <Link href={`/decks/${deck.id}`}>Open</Link>
+                        <Link href={`/decks/${deck.id}`}>開く</Link>
                       </Button>
                       <Button asChild size="sm">
                         <a
@@ -78,7 +78,7 @@ export default async function DecksIndexPage() {
                           target="_blank"
                           rel="noreferrer"
                         >
-                          Print PDF
+                          印刷用PDF
                         </a>
                       </Button>
                     </div>
@@ -91,11 +91,10 @@ export default async function DecksIndexPage() {
           <Card className="border-border/40 bg-card/40">
             <CardContent className="space-y-3 p-6 text-sm">
               <p className="text-muted-foreground">
-                No saved decks yet. Build a legal 50-card list, save it, then
-                print an A4 proxy PDF from here.
+                まだ保存デッキがありません。まず合法な50枚を作って保存し、ここからPDFを作成できます。
               </p>
               <Button asChild variant="outline">
-                <Link href="/decks/new">Choose a leader</Link>
+                <Link href="/decks/new">リーダーを選ぶ</Link>
               </Button>
             </CardContent>
           </Card>

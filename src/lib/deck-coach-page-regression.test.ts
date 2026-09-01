@@ -12,8 +12,8 @@ test("saved deck detail adds Deck Coach while preserving the PDF action", async 
   assert.match(page, /DeckCoachSection/);
   assert.match(page, /getDeckCoachGuideForPage/);
   assert.match(page, /\/api\/decks\/\$\{deck\.id\}\/print\?includeLeader=1/);
-  assert.match(page, /Print PDF/);
-  assert.match(page, />Main Deck</);
+  assert.match(page, /印刷用PDF/);
+  assert.match(page, /メインデッキ/);
 });
 
 test("Deck Coach generation fetches active restrictions without an empty fallback", async () => {
