@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { DeckBattleBenchmark } from "@/components/grand-line/deck-battle-benchmark";
 import { cn } from "@/lib/utils";
 import type { CardListItem } from "@/lib/cards";
 import {
@@ -297,6 +298,8 @@ export function AiDeckProposer({
           <DeckVariantsView
             response={variantProposal}
             poolById={poolById}
+            leader={leader}
+            pool={pool}
             onApply={applyProposal}
           />
         ) : null}
@@ -482,10 +485,14 @@ export function AiDeckProposer({
 function DeckVariantsView({
   response,
   poolById,
+  leader,
+  pool,
   onApply,
 }: {
   response: DeckVariantsSuggestion;
   poolById: Map<string, CardListItem>;
+  leader: CardListItem;
+  pool: CardListItem[];
   onApply: (proposal: DeckSuggestion) => void;
 }) {
   const [showDetails, setShowDetails] = useState(false);
@@ -623,6 +630,13 @@ function DeckVariantsView({
       {showDetails ? (
         <DetailedVariantComparison response={response} poolById={poolById} />
       ) : null}
+
+      <DeckBattleBenchmark
+        response={response}
+        leader={leader}
+        pool={pool}
+        personalityByProfile={VARIANT_PERSONALITY_JA}
+      />
     </div>
   );
 }
