@@ -17,8 +17,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
 import { DeckBattleBenchmark } from "@/components/grand-line/deck-battle-benchmark";
+import {
+  DeckIntelligenceStepPanel,
+  DeckIntelligenceStepper,
+  type DeckIntelligenceStep,
+  type DeckIntelligenceStepStatus,
+} from "@/components/grand-line/deck-intelligence-workflow";
 import { cn } from "@/lib/utils";
 import type { CardListItem } from "@/lib/cards";
 import {
@@ -56,6 +61,11 @@ interface ApiError {
   attempts?: number;
 }
 
+interface AppliedDraftStatus {
+  key: string;
+  label: string;
+}
+
 const VARIANT_PERSONALITY_JA: Record<VariantProfile, string> = {
   recommended:
     "Leaderとの相性と選択したMain Styleを軸に、Feature Tagsを自然に取り入れる標準案です。",
@@ -79,8 +89,21 @@ export function AiDeckProposer({
     useState<DeckVariantsSuggestion | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [applyError, setApplyError] = useState<string | null>(null);
+  const [currentStep, setCurrentStep] = useState<DeckIntelligenceStep>(1);
+  const [expandedStep, setExpandedStep] =
+    useState<DeckIntelligenceStep | null>(1);
+  const [benchmarkComplete, setBenchmarkComplete] = useState(false);
+  const [optimizerComplete, setOptimizerComplete] = useState(false);
+  const [appliedDraft, setAppliedDraft] =
+    useState<AppliedDraftStatus | null>(null);
+  const [showAptitudes, setShowAptitudes] = useState(false);
   const [pending, startTransition] = useTransition();
   const replace = useDeckDraft((s) => s.replace);
+  const draftEntries = useDeckDraft((s) => s.entries);
+  const draftTotal = Object.values(draftEntries).reduce(
+    (total, entry) => total + entry.count,
+    0,
+  );
   const displayedAptitudes =
     proposal?.styleAptitudes ??
     variantProposal?.styleAptitudes ??
@@ -97,6 +120,8 @@ export function AiDeckProposer({
     setApplyError(null);
     setProposal(null);
     setVariantProposal(null);
+    setBenchmarkComplete(false);
+    setOptimizerComplete(false);
     const res = await fetch(`/api/ai/decks/${leader.id}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -117,6 +142,8 @@ export function AiDeckProposer({
     } else {
       setProposal((await res.json()) as DeckSuggestion);
     }
+    setCurrentStep(2);
+    setExpandedStep(2);
   }
 
   function toggleTag(tag: FeatureTag) {
@@ -129,10 +156,19 @@ export function AiDeckProposer({
     });
   }
 
-  function applyCards(entries: DeckCopyEntry[]): boolean {
+  function applyCards(
+    entries: DeckCopyEntry[],
+    status: AppliedDraftStatus = {
+      key: "proposal",
+      label: "構築案から反映",
+    },
+  ): boolean {
     setApplyError(null);
     try {
       applyDeckCopyEntries(entries, poolById, replace);
+      setAppliedDraft(status);
+      setCurrentStep(5);
+      setExpandedStep(5);
       return true;
     } catch {
       setApplyError(
@@ -142,144 +178,64 @@ export function AiDeckProposer({
     }
   }
 
-  function applyProposal(target: DeckSuggestion) {
-    applyCards(target.cards);
+  function applyProposal(target: DeckSuggestion, status: AppliedDraftStatus) {
+    applyCards(target.cards, status);
+  }
+
+  const hasProposal = Boolean(proposal || variantProposal);
+  const completedSteps = new Set<DeckIntelligenceStep>();
+  if (hasProposal) completedSteps.add(1);
+  if (hasProposal) completedSteps.add(2);
+  if (benchmarkComplete) completedSteps.add(3);
+  if (optimizerComplete) completedSteps.add(4);
+  const enabledSteps = new Set<DeckIntelligenceStep>([1]);
+  if (hasProposal) enabledSteps.add(2);
+  if (variantProposal) enabledSteps.add(3);
+  if (benchmarkComplete) enabledSteps.add(4);
+  if (appliedDraft) enabledSteps.add(5);
+
+  function stepStatus(step: DeckIntelligenceStep): DeckIntelligenceStepStatus {
+    if (currentStep === step) return "current";
+    return completedSteps.has(step) ? "complete" : "upcoming";
+  }
+
+  function advanceTo(step: DeckIntelligenceStep) {
+    setCurrentStep(step);
+    setExpandedStep(step);
+  }
+
+  function toggleStep(step: DeckIntelligenceStep) {
+    if (!enabledSteps.has(step)) return;
+    setExpandedStep((current) => (current === step ? null : step));
   }
 
   return (
-    <Card className="border-primary/40 bg-card/50">
-      <CardContent className="space-y-3 p-4">
-        <div className="flex items-baseline justify-between">
-          <h3 className="font-display text-sm tracking-wide">
-            Deck Intelligence Builder
-          </h3>
-          <span className="text-muted-foreground text-[10px] tracking-widest uppercase">
-            Phase 4 · Opus
-          </span>
-        </div>
-
-        <div className="space-y-3">
-          <div className="space-y-1.5">
-            <span className="text-muted-foreground text-[10px] tracking-widest uppercase">
-              Generation Mode
-            </span>
-            <div className="grid grid-cols-2 gap-1.5">
-              {DECK_INTELLIGENCE_GENERATION_MODES.map((mode) => (
-                <Button
-                  key={mode}
-                  type="button"
-                  size="sm"
-                  variant={generationMode === mode ? "secondary" : "outline"}
-                  aria-pressed={generationMode === mode}
-                  disabled={pending}
-                  onClick={() => setGenerationMode(mode)}
-                >
-                  {mode === "single" ? "おすすめ1案" : "3案を比較"}
-                </Button>
-              ))}
-            </div>
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-muted-foreground text-[10px] tracking-widest uppercase">
-              Main Style · 1つ
-            </label>
-            <Select
-              value={selectedStyle}
-              onValueChange={(value) => setSelectedStyle(value as MainStyle)}
-            >
-              <SelectTrigger className="w-full text-xs" aria-label="Main Style">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {MAIN_STYLE_IDS.map((style) => (
-                  <SelectItem key={style} value={style}>
-                    {MAIN_STYLE_LABELS[style]} {renderStars(aptitudeByStyle.get(style)?.stars)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <div
-              className="border-border/30 bg-background/30 mt-2 grid grid-cols-2 gap-x-3 gap-y-1 rounded-md border p-2"
-              aria-label="Leader Style Aptitude"
-            >
-              {MAIN_STYLE_IDS.filter((style) => style !== "auto").map((style) => {
-                const aptitude = aptitudeByStyle.get(style);
-                return (
-                  <div
-                    key={style}
-                    className="flex items-center justify-between gap-2 text-[10px]"
-                  >
-                    <span>{MAIN_STYLE_LABELS[style]}</span>
-                    <span
-                      className={cn(
-                        "font-mono tracking-tight",
-                        aptitude && aptitude.stars <= 2
-                          ? "text-muted-foreground"
-                          : "text-primary",
-                      )}
-                    >
-                      {renderStars(aptitude?.stars)}
-                      {aptitude && aptitude.stars <= 2 ? " 相性低め" : ""}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-            <p className="text-muted-foreground text-[10px]">
-              Leader効果・特徴・legal pool・support availabilityからsystemが算出。
+    <Card className="border-primary/40 bg-card/50 overflow-hidden">
+      <CardContent className="space-y-4 p-4 sm:p-6">
+        <header className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h3 className="font-display text-lg tracking-wide">Deck Intelligence</h3>
+            <p className="text-muted-foreground mt-1 text-xs">
+              条件を決め、構築案を比較し、下書きへ反映するまでを順に進めます。
             </p>
           </div>
-
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-muted-foreground text-[10px] tracking-widest uppercase">
-                Feature Tags · 0〜3個
-              </span>
-              <span className="text-muted-foreground font-mono text-[10px]">
-                {selectedTags.length}/{MAX_FEATURE_TAGS}
+          <div className="border-border/40 bg-background/40 min-w-[190px] rounded-md border px-3 py-2">
+            <div className="text-muted-foreground text-[9px] tracking-widest">現在の下書き</div>
+            <div className="mt-1 flex items-center justify-between gap-3">
+              <span className="font-mono text-sm">{draftTotal}枚</span>
+              <span className="text-muted-foreground text-[10px]">
+                {appliedDraft?.label ?? "手動編集中"}
               </span>
             </div>
-            <div className="flex flex-wrap gap-1.5">
-              {FEATURE_TAG_IDS.map((tag) => {
-                const selected = selectedTags.includes(tag);
-                const disabled =
-                  !selected && selectedTags.length >= MAX_FEATURE_TAGS;
-                return (
-                  <Button
-                    key={tag}
-                    type="button"
-                    size="xs"
-                    variant={selected ? "secondary" : "outline"}
-                    aria-pressed={selected}
-                    disabled={disabled || pending}
-                    onClick={() => toggleTag(tag)}
-                  >
-                    {FEATURE_TAG_LABELS[tag]}
-                  </Button>
-                );
-              })}
-            </div>
-            <p className="text-muted-foreground text-[10px] leading-relaxed">
-              Main Styleを主軸に、タグは候補順位へ補助的に加点します。
-            </p>
           </div>
+        </header>
 
-          <Button
-            onClick={() => startTransition(fetchProposal)}
-            disabled={pending}
-            size="sm"
-            className="w-full"
-          >
-            {pending
-              ? generationMode === "compare"
-                ? "3案を生成中…"
-                : "生成中…"
-              : generationMode === "compare"
-                ? "3案を生成して比較"
-                : "提案"}
-          </Button>
-        </div>
+        <DeckIntelligenceStepper
+          currentStep={currentStep}
+          completedSteps={completedSteps}
+          enabledSteps={enabledSteps}
+          onStepChange={toggleStep}
+        />
 
         {error ? (
           <div className="border-destructive/40 bg-destructive/10 text-destructive rounded-md border p-3 text-xs">
@@ -301,227 +257,490 @@ export function AiDeckProposer({
           </div>
         ) : null}
 
-        {variantProposal ? (
-          <DeckVariantsView
-            response={variantProposal}
-            poolById={poolById}
-            leader={leader}
-            pool={pool}
-            onApply={applyProposal}
-            onApplyCards={applyCards}
-          />
-        ) : null}
-
-        {proposal ? (
-          <div className="space-y-3 text-xs">
-            <Separator />
-            <div className="flex items-baseline justify-between gap-2">
-              <div>
-                <div className="text-muted-foreground text-[10px] tracking-widest uppercase">
-                  アーキタイプ
-                </div>
-                <div className="text-foreground font-display text-base font-semibold">
-                  {proposal.archetypeName}
-                </div>
-                <div className="mt-1 flex flex-wrap gap-1">
-                  <Badge variant="secondary" className="text-[9px]">
-                    {MAIN_STYLE_LABELS[proposal.selectedStyle]}
-                  </Badge>
-                  {proposal.selectedStyle === "auto" ? (
-                    <Badge variant="outline" className="text-[9px]">
-                      採用軸: {MAIN_STYLE_LABELS[proposal.effectiveStyle]}
-                    </Badge>
-                  ) : null}
-                  {proposal.selectedTags.map((tag) => (
-                    <Badge key={tag} variant="outline" className="text-[9px]">
-                      {FEATURE_TAG_LABELS[tag]}
-                    </Badge>
+        <div className="space-y-3">
+          <DeckIntelligenceStepPanel
+            step={1}
+            title="構築条件"
+            status={stepStatus(1)}
+            summary={`${generationMode === "single" ? "おすすめ1案" : "3案を比較"}・${MAIN_STYLE_LABELS[selectedStyle]}・${selectedTags.length > 0 ? selectedTags.map((tag) => FEATURE_TAG_LABELS[tag]).join(" / ") : "タグなし"}`}
+            expanded={expandedStep === 1}
+            onToggle={() => toggleStep(1)}
+          >
+            <div className="space-y-5">
+              <div className="space-y-2">
+                <div className="text-muted-foreground text-[10px] tracking-widest">生成方法</div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {DECK_INTELLIGENCE_GENERATION_MODES.map((mode) => (
+                    <Button
+                      key={mode}
+                      type="button"
+                      variant={generationMode === mode ? "secondary" : "outline"}
+                      aria-pressed={generationMode === mode}
+                      disabled={pending}
+                      className="h-auto justify-start px-4 py-3 text-left"
+                      onClick={() => setGenerationMode(mode)}
+                    >
+                      <span>
+                        <span className="block text-sm">
+                          {mode === "single" ? "おすすめ1案" : "3案を比較"}
+                        </span>
+                        <span className="text-muted-foreground mt-0.5 block text-[10px] font-normal">
+                          {mode === "single" ? "すぐ構築" : "構築方針を比較"}
+                        </span>
+                      </span>
+                    </Button>
                   ))}
                 </div>
               </div>
+
+              <div className="grid gap-5 lg:grid-cols-[minmax(220px,0.7fr)_minmax(0,1.3fr)]">
+                <div className="space-y-2">
+                  <label className="text-muted-foreground text-[10px] tracking-widest">
+                    Main Style
+                  </label>
+                  <Select
+                    value={selectedStyle}
+                    onValueChange={(value) => setSelectedStyle(value as MainStyle)}
+                  >
+                    <SelectTrigger className="w-full text-xs" aria-label="Main Style">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {MAIN_STYLE_IDS.map((style) => (
+                        <SelectItem key={style} value={style}>
+                          {MAIN_STYLE_LABELS[style]}{" "}
+                          {renderStars(aptitudeByStyle.get(style)?.stars)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    aria-expanded={showAptitudes}
+                    aria-controls="leader-style-aptitudes"
+                    onClick={() => setShowAptitudes((current) => !current)}
+                  >
+                    {showAptitudes ? "Leader適性を閉じる" : "Leader適性を見る"}
+                  </Button>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-muted-foreground text-[10px] tracking-widest">
+                      Feature Tags
+                    </span>
+                    <span className="text-muted-foreground font-mono text-[10px]">
+                      {selectedTags.length}/{MAX_FEATURE_TAGS}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {FEATURE_TAG_IDS.map((tag) => {
+                      const selected = selectedTags.includes(tag);
+                      const disabled =
+                        !selected && selectedTags.length >= MAX_FEATURE_TAGS;
+                      return (
+                        <Button
+                          key={tag}
+                          type="button"
+                          size="xs"
+                          variant={selected ? "secondary" : "outline"}
+                          aria-pressed={selected}
+                          disabled={disabled || pending}
+                          onClick={() => toggleTag(tag)}
+                        >
+                          {FEATURE_TAG_LABELS[tag]}
+                        </Button>
+                      );
+                    })}
+                  </div>
+                  <p className="text-muted-foreground text-[10px]">
+                    Main Styleを主軸に、0〜3個の補助傾向を加えます。
+                  </p>
+                </div>
+              </div>
+
+              {showAptitudes ? (
+                <div
+                  id="leader-style-aptitudes"
+                  className="border-border/30 bg-background/30 grid gap-2 rounded-md border p-3 sm:grid-cols-2 lg:grid-cols-3"
+                  aria-label="Leader Style Aptitude"
+                >
+                  {MAIN_STYLE_IDS.filter((style) => style !== "auto").map((style) => {
+                    const aptitude = aptitudeByStyle.get(style);
+                    return (
+                      <div key={style} className="flex items-center justify-between gap-2 text-[10px]">
+                        <span>{MAIN_STYLE_LABELS[style]}</span>
+                        <span className={cn("font-mono", aptitude && aptitude.stars <= 2 ? "text-muted-foreground" : "text-primary")}>
+                          {renderStars(aptitude?.stars)}
+                          {aptitude && aptitude.stars <= 2 ? " 相性低め" : ""}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+
               <Button
-                onClick={() => applyProposal(proposal)}
-                size="sm"
-                variant="outline"
+                onClick={() => startTransition(fetchProposal)}
+                disabled={pending}
+                className="w-full sm:w-auto sm:min-w-56"
               >
-                下書きに反映
+                {pending
+                  ? generationMode === "compare"
+                    ? "3案を生成中…"
+                    : "生成中…"
+                  : generationMode === "compare"
+                    ? "3案を生成して比較"
+                    : "おすすめ構築を生成"}
               </Button>
             </div>
+          </DeckIntelligenceStepPanel>
 
-            <Section label="デッキコンセプト">
-              <p>{proposal.deckConceptJa}</p>
-            </Section>
+          {hasProposal ? (
+            <DeckIntelligenceStepPanel
+              step={2}
+              title={variantProposal ? "3つの構築案" : "構築案"}
+              status={stepStatus(2)}
+              summary={
+                variantProposal
+                  ? "推奨・安定・特化の違いを比較"
+                  : proposal?.archetypeName ?? "生成済み"
+              }
+              expanded={expandedStep === 2}
+              onToggle={() => toggleStep(2)}
+            >
+              {variantProposal ? (
+                <DeckVariantsView
+                  response={variantProposal}
+                  poolById={poolById}
+                  onApply={applyProposal}
+                  appliedDraftKey={appliedDraft?.key ?? null}
+                />
+              ) : proposal ? (
+                <SingleProposalView
+                  proposal={proposal}
+                  poolById={poolById}
+                  applied={appliedDraft?.key === "single"}
+                  onApply={() =>
+                    applyProposal(proposal, {
+                      key: "single",
+                      label: "おすすめ構築から反映",
+                    })
+                  }
+                />
+              ) : null}
+            </DeckIntelligenceStepPanel>
+          ) : null}
 
-            <Section label="Leader Style Aptitude 理由">
+          {variantProposal ? (
+            <DeckBattleBenchmark
+              response={variantProposal}
+              leader={leader}
+              pool={pool}
+              personalityByProfile={VARIANT_PERSONALITY_JA}
+              currentStep={currentStep}
+              expandedStep={expandedStep}
+              onToggleStep={toggleStep}
+              onAdvanceStep={advanceTo}
+              onBenchmarkComplete={() => setBenchmarkComplete(true)}
+              onOptimizerComplete={() => setOptimizerComplete(true)}
+              onApplyCards={applyCards}
+              appliedDraftKey={appliedDraft?.key ?? null}
+            />
+          ) : null}
+
+          {appliedDraft ? (
+            <DeckIntelligenceStepPanel
+              step={5}
+              title="現在の下書き"
+              status={stepStatus(5)}
+              summary={`${draftTotal}枚・${appliedDraft.label}`}
+              expanded={expandedStep === 5}
+              onToggle={() => toggleStep(5)}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div>
+                  <p className="font-medium">下書きに反映済み</p>
+                  <p className="text-muted-foreground mt-1">
+                    自動保存はしていません。内容を確認してから保存してください。
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() =>
+                    document.getElementById("deck-save")?.scrollIntoView({
+                      behavior: "smooth",
+                      block: "center",
+                    })
+                  }
+                >
+                  保存欄へ
+                </Button>
+              </div>
+            </DeckIntelligenceStepPanel>
+          ) : null}
+        </div>
+
+        <p className="text-muted-foreground border-border/30 border-t pt-3 text-[10px] leading-relaxed">
+          カード事実と数値評価は検証済みデータとdeterministic計算を使用します。AIの説明は構築判断の参考情報です。
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function SingleProposalView({
+  proposal,
+  poolById,
+  applied,
+  onApply,
+}: {
+  proposal: DeckSuggestion;
+  poolById: Map<string, CardListItem>;
+  applied: boolean;
+  onApply: () => void;
+}) {
+  const [showDetails, setShowDetails] = useState(false);
+  const scores = proposal.metrics.evaluationScores;
+
+  return (
+    <div className="space-y-4 text-xs">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="font-display text-lg font-semibold">
+            {proposal.archetypeName}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1">
+            <Badge variant="secondary">
+              {MAIN_STYLE_LABELS[proposal.selectedStyle]}
+            </Badge>
+            {proposal.selectedStyle === "auto" ? (
+              <Badge variant="outline">
+                採用軸: {MAIN_STYLE_LABELS[proposal.effectiveStyle]}
+              </Badge>
+            ) : null}
+            {proposal.selectedTags.map((tag) => (
+              <Badge key={tag} variant="outline">
+                {FEATURE_TAG_LABELS[tag]}
+              </Badge>
+            ))}
+          </div>
+        </div>
+        <Button
+          type="button"
+          variant={applied ? "secondary" : "outline"}
+          disabled={applied}
+          onClick={onApply}
+        >
+          {applied ? "下書きに反映済み" : "この構築を下書きに反映"}
+        </Button>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-[minmax(0,1.4fr)_minmax(260px,0.6fr)]">
+        <div className="border-border/30 rounded-md border p-3">
+          <div className="text-muted-foreground text-[9px] tracking-widest">構築コンセプト</div>
+          <p className="mt-1 leading-relaxed">{proposal.deckConceptJa}</p>
+          <p className="text-muted-foreground mt-2 text-[10px]">
+            勝ち筋: {proposal.winCondition}
+          </p>
+        </div>
+        <div className="border-border/30 grid grid-cols-2 gap-2 rounded-md border p-3 font-mono text-[10px]">
+          <span>Attack {scores.attack}</span>
+          <span>Stability {scores.stability}</span>
+          <span>Expansion {scores.expansion}</span>
+          <span>Defense {scores.defense}</span>
+        </div>
+      </div>
+
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        aria-expanded={showDetails}
+        aria-controls="single-proposal-details"
+        onClick={() => setShowDetails((current) => !current)}
+      >
+        {showDetails ? "分析詳細を閉じる" : "分析詳細を見る"}
+      </Button>
+
+      {showDetails ? (
+        <div id="single-proposal-details" className="border-border/30 space-y-4 border-t pt-4">
+          <div className="grid gap-4 md:grid-cols-2">
+            <Section label="Leader適性の理由">
               <p>{proposal.styleAptitudeReasonJa}</p>
             </Section>
-
-            <Section label="勝ち筋">
-              <p>{proposal.winCondition}</p>
-            </Section>
-
-            <Section label="キーカード">
-              <div className="flex flex-wrap gap-1">
-                {proposal.keyCards.map((cardId) => (
-                  <Badge key={cardId} variant="outline" className="text-[9px]">
-                    {poolById.get(cardId)?.name ?? cardId}
-                  </Badge>
-                ))}
-              </div>
-            </Section>
-
-            {proposal.majorCombos.length > 0 ? (
-              <Section label="主要コンボ">
-                <ul className="space-y-1.5">
-                  {proposal.majorCombos.map((combo, index) => (
-                    <li key={`${combo.titleJa}-${index}`}>
-                      <strong>{combo.titleJa}</strong>
-                      <span className="text-muted-foreground ml-1 font-mono text-[9px]">
-                        {combo.cardIds.join(" + ")}
-                      </span>
-                      <p>{combo.explanationJa}</p>
-                    </li>
-                  ))}
-                </ul>
-              </Section>
-            ) : null}
-
             <Section label="コストカーブ方針">
               <p>{proposal.curveExplanationJa}</p>
             </Section>
-
-            <div className="grid grid-cols-2 gap-3">
-              <Section label="強み">
-                <Bullets items={proposal.strengths} />
-              </Section>
-              <Section label="弱み">
-                <Bullets items={proposal.weaknesses} />
-              </Section>
-            </div>
-
-            {proposal.favorable.length + proposal.unfavorable.length > 0 ? (
-              <div className="grid grid-cols-2 gap-3">
-                <Section label="相性◯">
-                  <Bullets items={proposal.favorable} />
-                </Section>
-                <Section label="相性✕">
-                  <Bullets items={proposal.unfavorable} />
-                </Section>
-              </div>
-            ) : null}
-
-            <Section label={`提案デッキ (${proposal.cards.length} 種 / ${proposal.cards.reduce((a, b) => a + b.count, 0)} 枚)`}>
-              <ul className="grid gap-1.5 sm:grid-cols-2">
-                {proposal.cards.map((c) => {
-                  const card = poolById.get(c.cardId);
-                  return (
-                    <li
-                      key={c.cardId}
-                      className={cn(
-                        "border-border/30 bg-background/40 flex items-center gap-2 rounded-md border p-1.5",
-                        !card && "border-destructive/60 text-destructive",
-                      )}
-                    >
-                      <div className="border-border/30 bg-card/60 relative aspect-[3/4] w-7 shrink-0 overflow-hidden rounded-sm border">
-                        {card?.imageUrlJp ? (
-                          /* eslint-disable-next-line @next/next/no-img-element */
-                          <img
-                            src={proxiedCardImage(card.imageUrlJp)!}
-                            alt=""
-                            loading="lazy"
-                            className="h-full w-full object-cover"
-                          />
-                        ) : null}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-muted-foreground font-mono text-[9px]">
-                          {c.cardId} ×{c.count}
-                        </div>
-                        {card ? (
-                          <div className="truncate text-[10px]">{card.name}</div>
-                        ) : null}
-                        <div className="text-primary text-[9px]">{c.roleJa}</div>
-                        <p className="text-muted-foreground mt-0.5 text-[9px] leading-snug">
-                          {c.selectionReasonJa}
-                        </p>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
+            <Section label="強み">
+              <Bullets items={proposal.strengths} />
             </Section>
-
-            <Section label="Deterministic Metrics">
-              <div className="grid grid-cols-2 gap-2">
-                <MetricList title="Cost Curve" values={proposal.metrics.costCurve} />
-                <MetricList
-                  title="Counter"
-                  values={proposal.metrics.counterDistribution}
-                />
-              </div>
-              <p className="mt-1">
-                Trigger ratio: {(proposal.metrics.triggerRatio * 100).toFixed(1)}%
-              </p>
-              <p className="mt-1">
-                Evaluation: {Object.entries(proposal.metrics.evaluationScores)
-                  .map(([key, value]) => `${key} ${value}`)
-                  .join(" / ")}
-              </p>
-              <p className="mt-1">
-                Major mechanics: {proposal.metrics.majorMechanics
-                  .map(({ mechanic, count }) => `${mechanic}×${count}`)
-                  .join(" / ") || "なし"}
-              </p>
+            <Section label="弱み">
+              <Bullets items={proposal.weaknesses} />
             </Section>
-
-            {proposal.warnings.length > 0 ? (
-              <div className="text-source-unverified text-[10px]">
-                ⚠ {proposal.warnings.join(" / ")}
-              </div>
-            ) : null}
-
-            <p className="text-muted-foreground text-[10px]">
-              モデル: <code className="font-mono">{proposal.modelVersion}</code>
-            </p>
           </div>
-        ) : null}
-      </CardContent>
-    </Card>
+
+          <Section label="キーカード">
+            <div className="flex flex-wrap gap-1">
+              {proposal.keyCards.map((cardId) => (
+                <Badge key={cardId} variant="outline">
+                  {poolById.get(cardId)?.name ?? cardId}
+                </Badge>
+              ))}
+            </div>
+          </Section>
+
+          <Section
+            label={`提案デッキ (${proposal.cards.length}種 / ${proposal.cards.reduce((total, card) => total + card.count, 0)}枚)`}
+          >
+            <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {proposal.cards.map((item) => {
+                const card = poolById.get(item.cardId);
+                return (
+                  <li
+                    key={item.cardId}
+                    className={cn(
+                      "border-border/30 bg-background/40 flex items-center gap-2 rounded-md border p-2",
+                      !card && "border-destructive/60 text-destructive",
+                    )}
+                  >
+                    <div className="border-border/30 bg-card/60 relative aspect-[3/4] w-9 shrink-0 overflow-hidden rounded-sm border">
+                      {card?.imageUrlJp ? (
+                        /* eslint-disable-next-line @next/next/no-img-element */
+                        <img
+                          src={proxiedCardImage(card.imageUrlJp)!}
+                          alt=""
+                          loading="lazy"
+                          className="h-full w-full object-cover"
+                        />
+                      ) : null}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[10px]">{card?.name ?? item.cardId}</div>
+                      <div className="text-muted-foreground font-mono text-[9px]">
+                        {item.cardId} ×{item.count}
+                      </div>
+                      <div className="text-primary text-[9px]">{item.roleJa}</div>
+                      <div className="text-muted-foreground mt-0.5 line-clamp-2 text-[9px] leading-relaxed">
+                        {item.selectionReasonJa}
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </Section>
+
+          <Section label="Deterministic metrics">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <MetricList title="Cost Curve" values={proposal.metrics.costCurve} />
+              <MetricList title="Counter" values={proposal.metrics.counterDistribution} />
+            </div>
+            <p className="text-muted-foreground mt-2 font-mono text-[9px]">
+              Trigger {(proposal.metrics.triggerRatio * 100).toFixed(1)}%・model {proposal.modelVersion}
+            </p>
+          </Section>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CardDifferenceList({
+  label,
+  cardIds,
+  proposal,
+  poolById,
+}: {
+  label: string;
+  cardIds: string[];
+  proposal: DeckSuggestion;
+  poolById: Map<string, CardListItem>;
+}) {
+  const visible = cardIds.slice(0, 4);
+  return (
+    <div>
+      <div className="text-muted-foreground mb-1.5 text-[9px] tracking-widest">{label}</div>
+      <div className="flex flex-wrap gap-1.5">
+        {visible.length > 0 ? (
+          visible.map((cardId) => {
+            const card = poolById.get(cardId);
+            const count = proposal.cards.find((item) => item.cardId === cardId)?.count ?? 0;
+            return (
+              <span key={cardId} className="border-border/40 bg-background/45 max-w-full rounded-md border px-2 py-1">
+                <span className="block truncate text-[10px]">{card?.name ?? cardId} ×{count}</span>
+                <span className="text-muted-foreground block font-mono text-[8px]">{cardId}</span>
+              </span>
+            );
+          })
+        ) : (
+          <span className="text-muted-foreground text-[9px]">単独採用なし</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CardDeltaList({
+  label,
+  deltas,
+  poolById,
+}: {
+  label: string;
+  deltas: Array<{ cardId: string; referenceCount: number; variantCount: number }>;
+  poolById: Map<string, CardListItem>;
+}) {
+  return (
+    <div>
+      <div className="text-muted-foreground mb-1 text-[9px] tracking-widest">{label}</div>
+      <div className="space-y-1">
+        {deltas.length > 0 ? (
+          deltas.slice(0, 3).map((delta) => (
+            <div key={delta.cardId} className="flex min-w-0 items-center justify-between gap-2 text-[10px]">
+              <span className="min-w-0 truncate">
+                {poolById.get(delta.cardId)?.name ?? delta.cardId}
+                <span className="text-muted-foreground ml-1 font-mono text-[8px]">{delta.cardId}</span>
+              </span>
+              <span className="shrink-0 font-mono">
+                {delta.referenceCount}→{delta.variantCount}
+              </span>
+            </div>
+          ))
+        ) : (
+          <span className="text-muted-foreground text-[9px]">なし</span>
+        )}
+      </div>
+    </div>
   );
 }
 
 function DeckVariantsView({
   response,
   poolById,
-  leader,
-  pool,
   onApply,
-  onApplyCards,
+  appliedDraftKey,
 }: {
   response: DeckVariantsSuggestion;
   poolById: Map<string, CardListItem>;
-  leader: CardListItem;
-  pool: CardListItem[];
-  onApply: (proposal: DeckSuggestion) => void;
-  onApplyCards: (cards: DeckCopyEntry[]) => boolean;
+  onApply: (proposal: DeckSuggestion, status: AppliedDraftStatus) => void;
+  appliedDraftKey: string | null;
 }) {
   const [showDetails, setShowDetails] = useState(false);
+  const [expandedProfile, setExpandedProfile] =
+    useState<VariantProfile | null>(null);
   const byProfile = new Map(
     response.variants.map((variant) => [variant.variantProfile, variant]),
   );
 
   return (
-    <div className="space-y-3 text-xs">
-      <Separator />
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <div className="text-muted-foreground text-[10px] tracking-widest uppercase">
-            Deck Intelligence Compare v1
-          </div>
-          <p className="text-muted-foreground mt-0.5 text-[10px]">
-            同じLeader・Main Style・Feature Tagsで構築方針だけを比較します。
-          </p>
-        </div>
+    <div className="space-y-4 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-muted-foreground text-[10px]">
+          固有採用と枚数差を中心に、3案の構築方針を比べます。
+        </p>
         <Button
           type="button"
           size="sm"
@@ -533,88 +752,96 @@ function DeckVariantsView({
         </Button>
       </div>
 
-      <div className="grid gap-2 lg:grid-cols-3">
+      <div className="grid gap-3 xl:grid-cols-3">
         {VARIANT_PROFILE_IDS.map((profile) => {
           const variant = byProfile.get(profile);
           if (!variant) return null;
           const metrics = response.comparison.metricsByVariant[profile];
           const cardComparison = response.comparison.cardsByVariant[profile];
-          const uniqueCards = cardComparison.uniqueCardIds
-            .slice(0, 5)
-            .map((cardId) => poolById.get(cardId)?.name ?? cardId);
+          const applied = appliedDraftKey === `variant:${profile}`;
+          const expanded = expandedProfile === profile;
           return (
             <Card key={profile} className="border-border/50 bg-background/35">
-              <CardContent className="flex h-full flex-col gap-2 p-3">
+              <CardContent className="flex h-full flex-col gap-3 p-4">
                 <div>
-                  <Badge variant="secondary" className="text-[9px]">
-                    {variant.variantLabel}
-                  </Badge>
-                  <div className="font-display mt-1 text-sm font-semibold">
+                  <div className="flex items-center justify-between gap-2">
+                    <Badge variant="secondary">{variant.variantLabel}</Badge>
+                    {applied ? <Badge variant="outline">反映済み</Badge> : null}
+                  </div>
+                  <div className="font-display mt-2 text-base font-semibold">
                     {variant.archetypeName}
                   </div>
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    <Badge variant="outline" className="text-[9px]">
-                      {MAIN_STYLE_LABELS[variant.selectedStyle]}
-                    </Badge>
-                    {variant.selectedTags.map((tag) => (
-                      <Badge key={tag} variant="outline" className="text-[9px]">
-                        {FEATURE_TAG_LABELS[tag]}
-                      </Badge>
-                    ))}
-                  </div>
+                  <p className="text-muted-foreground mt-1 text-[10px] leading-relaxed">
+                    {VARIANT_PERSONALITY_JA[profile]}
+                  </p>
                 </div>
 
-                <Section label="構築の性格">
-                  <p>{VARIANT_PERSONALITY_JA[profile]}</p>
-                </Section>
-                <Section label="構築思想">
-                  <p>{variant.deckConceptJa}</p>
-                </Section>
-                <Section label="この案だけの採用カード">
-                  <p>
-                    {uniqueCards.join(" / ") ||
-                      "単独採用なし（採用枚数の配分で性格を分けています）"}
-                  </p>
-                  <p className="text-muted-foreground mt-1 text-[9px]">
-                    枚数を増やした主なカード: {formatDeltas(
-                      cardComparison.increasedCards,
-                      poolById,
-                    )}
-                  </p>
-                </Section>
-                <Section label="この案を選ぶ理由">
-                  <p>{variant.variantReasonJa}</p>
-                </Section>
-                <Section label="主なキーカード">
-                  <div className="flex flex-wrap gap-1">
-                    {variant.keyCards.slice(0, 5).map((cardId) => (
-                      <Badge key={cardId} variant="outline" className="text-[9px]">
-                        {poolById.get(cardId)?.name ?? cardId}
-                      </Badge>
-                    ))}
-                  </div>
-                </Section>
+                <CardDifferenceList
+                  label="この案だけ"
+                  cardIds={cardComparison.uniqueCardIds}
+                  proposal={variant}
+                  poolById={poolById}
+                />
+                <CardDeltaList
+                  label="推奨より増"
+                  deltas={cardComparison.increasedCards}
+                  poolById={poolById}
+                />
+                <CardDeltaList
+                  label="推奨より減"
+                  deltas={cardComparison.decreasedCards}
+                  poolById={poolById}
+                />
 
-                <div className="border-border/30 border-y py-2">
-                  <div className="text-muted-foreground mb-1 text-[9px]">
-                    プレイ傾向（優劣ではなく性格の比較）
-                  </div>
-                  <div className="grid grid-cols-2 gap-1 font-mono text-[9px]">
+                <div className="border-border/30 grid grid-cols-2 gap-2 border-y py-3 font-mono text-[10px]">
                     <span>Attack {metrics.attack}</span>
                     <span>Stability {metrics.stability}</span>
                     <span>Expansion {metrics.expansion}</span>
                     <span>Defense {metrics.defense}</span>
-                  </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2">
-                  <Section label="Strengths">
-                    <Bullets items={variant.strengths.slice(0, 2)} />
-                  </Section>
-                  <Section label="Weaknesses">
-                    <Bullets items={variant.weaknesses.slice(0, 2)} />
-                  </Section>
-                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  aria-expanded={expanded}
+                  aria-controls={`variant-${profile}-details`}
+                  onClick={() =>
+                    setExpandedProfile((current) =>
+                      current === profile ? null : profile,
+                    )
+                  }
+                >
+                  {expanded ? "詳細を閉じる" : "詳細を見る"}
+                </Button>
+
+                {expanded ? (
+                  <div id={`variant-${profile}-details`} className="border-border/30 space-y-3 border-t pt-3">
+                    <Section label="構築思想">
+                      <p>{variant.deckConceptJa}</p>
+                    </Section>
+                    <Section label="この案を選ぶ理由">
+                      <p>{variant.variantReasonJa}</p>
+                    </Section>
+                    <Section label="主なキーカード">
+                      <div className="flex flex-wrap gap-1">
+                        {variant.keyCards.slice(0, 5).map((cardId) => (
+                          <Badge key={cardId} variant="outline" className="text-[9px]">
+                            {poolById.get(cardId)?.name ?? cardId}
+                          </Badge>
+                        ))}
+                      </div>
+                    </Section>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <Section label="強み">
+                        <Bullets items={variant.strengths} />
+                      </Section>
+                      <Section label="弱み">
+                        <Bullets items={variant.weaknesses} />
+                      </Section>
+                    </div>
+                  </div>
+                ) : null}
 
                 {variant.lowDiversityWarning ? (
                   <p className="text-source-unverified text-[10px]">
@@ -625,11 +852,17 @@ function DeckVariantsView({
                 <Button
                   type="button"
                   size="sm"
-                  variant="outline"
+                  variant={applied ? "secondary" : "outline"}
                   className="mt-auto w-full"
-                  onClick={() => onApply(variant)}
+                  disabled={applied}
+                  onClick={() =>
+                    onApply(variant, {
+                      key: `variant:${profile}`,
+                      label: `${variant.variantLabel}から反映`,
+                    })
+                  }
                 >
-                  この構築を下書きに反映
+                  {applied ? "下書きに反映済み" : "この構築を下書きに反映"}
                 </Button>
               </CardContent>
             </Card>
@@ -640,14 +873,6 @@ function DeckVariantsView({
       {showDetails ? (
         <DetailedVariantComparison response={response} poolById={poolById} />
       ) : null}
-
-      <DeckBattleBenchmark
-        response={response}
-        leader={leader}
-        pool={pool}
-        personalityByProfile={VARIANT_PERSONALITY_JA}
-        onApplyCards={onApplyCards}
-      />
     </div>
   );
 }

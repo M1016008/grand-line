@@ -18,7 +18,7 @@ export function SiteHeader() {
   return (
     <header className="border-border/40 sticky top-0 z-30 w-full border-b backdrop-blur supports-[backdrop-filter]:bg-background/70">
       <div className="mx-auto flex h-14 max-w-7xl items-center gap-6 px-4">
-        <Link href="/" className="flex items-baseline gap-2">
+        <Link href="/" className="flex shrink-0 items-baseline gap-2">
           <span className="font-display text-primary text-xl font-semibold tracking-[0.18em]">
             GRAND LINE
           </span>
@@ -26,13 +26,13 @@ export function SiteHeader() {
             ONE PIECE TCG COMPASS
           </span>
         </Link>
-        <nav className="flex flex-1 items-center gap-1 text-sm">
+        <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto text-sm">
           {NAV.map((item) => (
             <Link
               key={item.href}
               href={item.href}
               className={cn(
-                "hover:bg-accent/50 hover:text-foreground rounded-md px-3 py-1.5 transition",
+                "hover:bg-accent/50 hover:text-foreground shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 transition",
                 item.soon && "text-muted-foreground/50 pointer-events-none",
               )}
             >
