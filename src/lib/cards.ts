@@ -10,7 +10,7 @@
  */
 import "server-only";
 
-import { and, asc, eq, inArray, like, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, like, or, sql, type SQL } from "drizzle-orm";
 
 import { db } from "@/db";
 import {
@@ -23,6 +23,7 @@ import {
 } from "@/db/schema";
 import type { CardTranslationSource } from "@/db/schema";
 import { isMockDataAllowed } from "@/db/config";
+import { matchesCardCost, type CardCostFilter } from "@/lib/card-cost-filter";
 import { MOCK_CARDS, type MockCard } from "@/lib/mock-cards";
 
 export interface CardListItem {
@@ -96,7 +97,7 @@ export interface CardListFilters {
   color?: string;
   feature?: string;
   text?: string; // matches name + features
-  cost?: number;
+  cost?: CardCostFilter;
   /** 1-based page number. */
   page?: number;
   pageSize?: number;
@@ -239,7 +240,11 @@ async function listFromDb(filters: CardListFilters): Promise<CardListResult> {
     // the user-facing string type satisfies Drizzle's narrow signature.
     conditions.push(eq(cards.cardType, filters.cardType as "LEADER"));
   }
-  if (typeof filters.cost === "number") conditions.push(eq(cards.cost, filters.cost));
+  if (typeof filters.cost === "number") {
+    conditions.push(eq(cards.cost, filters.cost));
+  } else if (filters.cost) {
+    conditions.push(gte(cards.cost, filters.cost.atLeast));
+  }
 
   // colors / features / mechanics are JSON arrays stored as TEXT. Until the
   // SQLite JSON1 path is wired through Drizzle for typed queries, a quoted
@@ -641,7 +646,7 @@ function matches(card: CardListItem, f: CardListFilters): boolean {
   if (f.setCode && card.setCode !== f.setCode) return false;
   if (f.color && !card.colors.includes(f.color)) return false;
   if (f.feature && !card.features.some((x) => x.includes(f.feature!))) return false;
-  if (typeof f.cost === "number" && card.cost !== f.cost) return false;
+  if (!matchesCardCost(card.cost, f.cost)) return false;
   if (f.text) {
     const q = f.text.toLowerCase();
     if (

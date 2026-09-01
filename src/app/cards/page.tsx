@@ -5,6 +5,7 @@ import { CardThumb } from "@/components/grand-line/card-thumb";
 import { MockBanner } from "@/components/grand-line/mock-banner";
 import { Pagination } from "@/components/grand-line/pagination";
 import { SiteHeader } from "@/components/grand-line/site-header";
+import { parseCardCostFilter } from "@/lib/card-cost-filter";
 import { getActiveRestrictions, listCards, listSets } from "@/lib/cards";
 
 export const dynamic = "force-dynamic";
@@ -25,7 +26,7 @@ const PAGE_SIZE = 60;
 
 export default async function CardsPage({ searchParams }: PageProps) {
   const sp = await searchParams;
-  const cost = sp.cost && sp.cost !== "8+" ? Number(sp.cost) : undefined;
+  const cost = parseCardCostFilter(sp.cost);
   const page = sp.page ? Math.max(1, Number(sp.page)) : 1;
 
   const [result, sets, restrictions] = await Promise.all([
