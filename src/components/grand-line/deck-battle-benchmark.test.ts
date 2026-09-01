@@ -49,12 +49,14 @@ test("benchmark route resolves facts once and revalidates saved opponents", asyn
     "benchmark",
     "route.ts",
   );
+  const resolver = await source("src", "lib", "benchmark-opponent.ts");
   assert.equal(route.match(/listCards\(\{ pageSize: 5_000 \}\)/g)?.length, 1);
   assert.equal(route.match(/runPairedDeckBenchmark\(/g)?.length, 1);
   assert.match(route, /activeRegulations\(\)/);
   assert.match(route, /getSavedDeck/);
-  assert.match(route, /strictDeckIntelligencePracticeDeck/);
-  assert.match(route, /buildStrictSyntheticBenchmarkOpponent/);
+  assert.match(route, /resolveBenchmarkOpponent/);
+  assert.match(resolver, /strictDeckIntelligencePracticeDeck/);
+  assert.match(resolver, /buildStrictSyntheticBenchmarkOpponent/);
   assert.doesNotMatch(route, /buildPracticeDeck\(syntheticLeader, pool\)/);
   assert.match(route, /restrictions_unavailable/);
   assert.match(route, /benchmark_deck_invalid/);
@@ -68,7 +70,42 @@ test("Compare integration leaves single generation and existing draft apply in p
     "ai-deck-proposer.tsx",
   );
   assert.match(proposer, /mode === "single" \? "おすすめ1案" : "3案を比較"/);
-  assert.match(proposer, /applyDeckCopyEntries\(target\.cards, poolById, replace\)/);
+  assert.match(proposer, /applyDeckCopyEntries\(entries, poolById, replace\)/);
   assert.match(proposer, /<DeckBattleBenchmark/);
   assert.match(proposer, /response=\{response\}/);
+});
+
+test("Deck Optimizer UI is explicit, paired, and manual-apply only", async () => {
+  const component = await source(
+    "src",
+    "components",
+    "grand-line",
+    "deck-optimizer.tsx",
+  );
+  const route = await source(
+    "src",
+    "app",
+    "api",
+    "practice",
+    "optimizer",
+    "route.ts",
+  );
+  const domain = await source("src", "lib", "deck-optimizer.ts");
+  assert.match(component, /Optimizer candidate \/ 改善候補/);
+  assert.match(component, /Practice engine上の改善シグナル/);
+  assert.match(component, /この構築の改善候補を探す/);
+  assert.match(component, /この入替を下書きに反映/);
+  assert.match(component, /反映した候補で再ベンチマーク/);
+  assert.match(component, /gained/);
+  assert.match(component, /lost/);
+  assert.match(component, /candidate 95% CI/);
+  assert.match(component, /Deck structure delta/);
+  assert.match(domain, /公式環境での強さや大会勝率の改善を保証/);
+  assert.doesNotMatch(component, /最強|真の最適解|大会勝率最大化|Best/);
+  assert.match(route, /listCards\(\{ pageSize: 5_000 \}\)/);
+  assert.match(route, /activeRegulations\(\)/);
+  assert.match(route, /getSavedDeck/);
+  assert.match(route, /readAiSynergiesForLeader/);
+  assert.match(route, /resolveBenchmarkOpponent/);
+  assert.match(route, /runDeckOptimizer/);
 });

@@ -3,12 +3,14 @@ import { z } from "zod";
 
 import { listCards } from "@/lib/cards";
 import {
+  BenchmarkOpponentResolutionError,
+  resolveBenchmarkOpponent,
+} from "@/lib/benchmark-opponent";
+import {
   BENCHMARK_SERVER_MAX_GAMES,
   BenchmarkDeckValidationError,
-  buildStrictSyntheticBenchmarkOpponent,
   runPairedDeckBenchmark,
   strictDeckIntelligencePracticeDeck,
-  type BenchmarkOpponentDescriptor,
 } from "@/lib/deck-battle-benchmark";
 import { DeckCopyResolutionError } from "@/lib/deck-intelligence-compare";
 import {
@@ -16,7 +18,6 @@ import {
   VARIANT_PROFILE_LABELS,
 } from "@/lib/deck-intelligence-preferences";
 import { CPU_LEVEL_VALUES } from "@/lib/practice-log";
-import type { PracticeDeck } from "@/lib/practice-sim";
 import {
   activeRegulations,
   DeckRegulationsUnavailableError,
@@ -107,15 +108,13 @@ export async function POST(request: Request) {
         regulations,
       }),
     }));
-    const opponent = resolveOpponent({
+    const opponent = resolveBenchmarkOpponent({
       requested: body.opponent,
       savedOpponent,
       poolById,
       pool: pool.cards,
       regulations,
     });
-    if (opponent instanceof NextResponse) return opponent;
-
     const startedAt = Date.now();
     const benchmark = runPairedDeckBenchmark({
       variants,
@@ -129,6 +128,12 @@ export async function POST(request: Request) {
       elapsedMs: Date.now() - startedAt,
     });
   } catch (error) {
+    if (error instanceof BenchmarkOpponentResolutionError) {
+      return NextResponse.json(
+        { error: error.code, detail: error.message },
+        { status: 404 },
+      );
+    }
     if (error instanceof DeckRegulationsUnavailableError) {
       return NextResponse.json(
         { error: "restrictions_unavailable", detail: error.message },
@@ -157,78 +162,4 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
-}
-
-function resolveOpponent({
-  requested,
-  savedOpponent,
-  poolById,
-  pool,
-  regulations,
-}: {
-  requested: z.infer<typeof opponentSchema>;
-  savedOpponent: Awaited<ReturnType<typeof getSavedDeck>>;
-  poolById: ReadonlyMap<string, (typeof pool)[number]>;
-  pool: Awaited<ReturnType<typeof listCards>>["cards"];
-  regulations: Awaited<ReturnType<typeof activeRegulations>>;
-}):
-  | { deck: PracticeDeck; descriptor: BenchmarkOpponentDescriptor }
-  | NextResponse {
-  if (requested.kind === "saved") {
-    if (!savedOpponent) {
-      return NextResponse.json(
-        { error: "opponent_not_found", detail: "Saved opponent was not found." },
-        { status: 404 },
-      );
-    }
-    const savedPool = new Map(
-      savedOpponent.entries.map((entry) => [entry.card.id, entry.card]),
-    );
-    const deck = strictDeckIntelligencePracticeDeck({
-      id: `saved:${savedOpponent.id}`,
-      name: savedOpponent.name,
-      leader: savedOpponent.leader,
-      cards: savedOpponent.entries.map((entry) => ({
-        cardId: entry.card.id,
-        count: entry.count,
-      })),
-      poolById: savedPool,
-      regulations,
-    });
-    return {
-      deck,
-      descriptor: {
-        kind: "saved",
-        id: savedOpponent.id,
-        name: savedOpponent.name,
-        leaderId: savedOpponent.leader.id,
-        synthetic: false,
-      },
-    };
-  }
-
-  const syntheticLeader = poolById.get(requested.leaderId);
-  if (!syntheticLeader || syntheticLeader.cardType !== "LEADER") {
-    return NextResponse.json(
-      {
-        error: "opponent_leader_not_found",
-        detail: `${requested.leaderId} is not an available leader.`,
-      },
-      { status: 404 },
-    );
-  }
-  return {
-    deck: buildStrictSyntheticBenchmarkOpponent({
-      leader: syntheticLeader,
-      pool,
-      regulations,
-    }),
-    descriptor: {
-      kind: "synthetic",
-      id: `synthetic:${syntheticLeader.id}`,
-      name: `Synthetic benchmark opponent — ${syntheticLeader.name}`,
-      leaderId: syntheticLeader.id,
-      synthetic: true,
-    },
-  };
 }

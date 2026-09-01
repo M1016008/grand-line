@@ -1,5 +1,5 @@
-import type { CardCoachFactInput } from "@/ai/card-coach";
 import { seedGroups } from "@/lib/auto-groups";
+import type { CardListItem } from "@/lib/cards";
 import { evaluateDeck, type DeckEvaluation } from "@/lib/deck-evaluation";
 import { costCurve } from "@/lib/deck-rules";
 import { exactTurnProbabilities } from "@/lib/probability";
@@ -8,7 +8,7 @@ import { detectRuleSynergies } from "@/lib/synergy-rules";
 export const DECK_COACH_METRICS_VERSION = "deck-coach-metrics-v1.0.0";
 
 export interface DeckCoachMetricEntry {
-  card: CardCoachFactInput;
+  card: CardListItem;
   count: number;
 }
 
@@ -41,7 +41,7 @@ export interface DeckCoachDeterministicMetrics {
 }
 
 export function buildDeckCoachMetrics(
-  leader: CardCoachFactInput,
+  leader: CardListItem,
   entries: DeckCoachMetricEntry[],
 ): DeckCoachDeterministicMetrics {
   const counts = new Map(entries.map((entry) => [entry.card.id, entry.count]));

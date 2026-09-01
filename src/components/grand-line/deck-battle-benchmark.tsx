@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import type { DeckVariantsSuggestion } from "@/ai/deck-suggestion";
+import { DeckOptimizer } from "@/components/grand-line/deck-optimizer";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -20,6 +21,7 @@ import {
   type BenchmarkVariantMetrics,
   type DeckBattleBenchmarkResult,
 } from "@/lib/deck-battle-benchmark";
+import type { DeckCopyEntry } from "@/lib/deck-intelligence-compare";
 import {
   VARIANT_PROFILE_IDS,
   VARIANT_PROFILE_LABELS,
@@ -36,6 +38,7 @@ interface DeckBattleBenchmarkProps {
   leader: CardListItem;
   pool: CardListItem[];
   personalityByProfile: Record<VariantProfile, string>;
+  onApplyCards: (cards: DeckCopyEntry[]) => boolean;
 }
 
 interface SavedDeckOption {
@@ -60,6 +63,7 @@ export function DeckBattleBenchmark({
   leader,
   pool,
   personalityByProfile,
+  onApplyCards,
 }: DeckBattleBenchmarkProps) {
   const [open, setOpen] = useState(false);
   const [savedDecks, setSavedDecks] = useState<SavedDeckOption[]>([]);
@@ -69,6 +73,21 @@ export function DeckBattleBenchmark({
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<BenchmarkApiResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [variantOverrides, setVariantOverrides] = useState<
+    Partial<Record<VariantProfile, DeckCopyEntry[]>>
+  >({});
+
+  const variantCards = useMemo(
+    () =>
+      Object.fromEntries(
+        response.variants.map((variant) => [
+          variant.variantProfile,
+          variantOverrides[variant.variantProfile] ??
+            variant.cards.map(({ cardId, count }) => ({ cardId, count })),
+        ]),
+      ) as Record<VariantProfile, DeckCopyEntry[]>,
+    [response.variants, variantOverrides],
+  );
 
   const syntheticLeaders = useMemo(() => {
     const byId = new Map(
@@ -124,7 +143,7 @@ export function DeckBattleBenchmark({
           leaderId: leader.id,
           variants: response.variants.map((variant) => ({
             variantProfile: variant.variantProfile,
-            cards: variant.cards.map(({ cardId, count }) => ({ cardId, count })),
+            cards: variantCards[variant.variantProfile],
           })),
           opponent,
           games,
@@ -263,10 +282,30 @@ export function DeckBattleBenchmark({
       ) : null}
 
       {result ? (
-        <BenchmarkResults
-          response={result}
-          personalityByProfile={personalityByProfile}
-        />
+        <>
+          <BenchmarkResults
+            response={result}
+            personalityByProfile={personalityByProfile}
+          />
+          <DeckOptimizer
+            response={response}
+            leader={leader}
+            pool={pool}
+            variantCards={variantCards}
+            opponent={result.benchmark.opponent}
+            cpuSkill={cpuSkill}
+            onApplyCandidate={(profile, candidate) => {
+              const applied = onApplyCards(candidate.resultingDeck.cards);
+              if (!applied) return false;
+              setVariantOverrides((current) => ({
+                ...current,
+                [profile]: candidate.resultingDeck.cards,
+              }));
+              return true;
+            }}
+            onRebenchmark={() => void runBenchmark()}
+          />
+        </>
       ) : null}
     </div>
   );

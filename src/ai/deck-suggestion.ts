@@ -36,15 +36,12 @@ import {
 } from "@/lib/deck-rules";
 import { buildDeckCoachMetrics } from "@/lib/deck-coach-metrics";
 import {
-  buildDeckCandidateRankingContext,
-  calculateLeaderStyleAptitudesFromContext,
-  eligibleDeckCandidates,
   FEATURE_TAG_LABELS,
+  isVerifiedOfficialCard,
   MAIN_STYLE_LABELS,
+  prepareDeckCandidateRanking,
   rankDeckCandidates,
-  recommendedMainStyle,
   resolveDeckPreferences,
-  seedAnalysisPool,
   VARIANT_PROFILE_LABELS,
   type DeckPreferenceSelection,
   type FeatureTag,
@@ -386,7 +383,7 @@ export function buildCandidatePool(
 
 interface CandidateAnalysis {
   analysisPool: CardCoachFactInput[];
-  rankingContext: ReturnType<typeof buildDeckCandidateRankingContext>;
+  rankingContext: ReturnType<typeof prepareDeckCandidateRanking>["rankingContext"];
   effectiveSelection: DeckPreferenceSelection;
   aptitudes: LeaderStyleAptitude[];
   effectiveStyle: Exclude<MainStyle, "auto">;
@@ -399,33 +396,19 @@ function buildCandidateAnalysis(
   regulations: DeckRegulations,
   persistedSynergies: RuleSynergy[],
 ): CandidateAnalysis {
-  const eligible = eligibleDeckCandidates(leader, pool, regulations) as CardCoachFactInput[];
-  const analysisPool = seedAnalysisPool(leader, eligible) as CardCoachFactInput[];
-  const context = buildDeckCandidateRankingContext(
+  const prepared = prepareDeckCandidateRanking(
     leader,
-    analysisPool,
+    pool,
+    selection,
+    regulations,
     persistedSynergies,
   );
-  const aptitudes = calculateLeaderStyleAptitudesFromContext(
-    leader,
-    analysisPool,
-    eligible.length,
-    context,
-  );
-  const effectiveStyle =
-    selection.selectedStyle === "auto"
-      ? recommendedMainStyle(aptitudes)
-      : selection.selectedStyle;
-  const effectiveSelection = {
-    ...selection,
-    selectedStyle: effectiveStyle,
-  };
   return {
-    analysisPool,
-    rankingContext: context,
-    effectiveSelection,
-    aptitudes,
-    effectiveStyle,
+    analysisPool: prepared.analysisPool,
+    rankingContext: prepared.rankingContext,
+    effectiveSelection: prepared.effectiveSelection,
+    aptitudes: prepared.aptitudes,
+    effectiveStyle: prepared.effectiveStyle,
   };
 }
 
@@ -448,10 +431,7 @@ function rankPreparedCandidatePool(
 export function isVerifiedOfficialDeckFact(
   card: Pick<CardCoachFactInput, "verified" | "source">,
 ): boolean {
-  return (
-    card.verified &&
-    (card.source === "official_jp" || card.source === "official_en")
-  );
+  return isVerifiedOfficialCard(card);
 }
 
 /* ──────────────────────────────────────────────────────────────────────── */

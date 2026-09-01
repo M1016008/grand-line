@@ -134,6 +134,15 @@ export interface DeckCandidateRankingContext {
   evidenceByCardId: ReadonlyMap<string, DeckCandidateRelationshipEvidence>;
 }
 
+export interface PreparedDeckCandidateRanking<T extends CardListItem = CardListItem> {
+  eligiblePool: T[];
+  analysisPool: T[];
+  rankingContext: DeckCandidateRankingContext;
+  effectiveSelection: DeckPreferenceSelection;
+  aptitudes: LeaderStyleAptitude[];
+  effectiveStyle: Exclude<MainStyle, "auto">;
+}
+
 export interface DeckCandidateScore {
   leaderAffinity: number;
   mainStyle: number;
@@ -207,20 +216,29 @@ export function resolveDeckPreferences(
 }
 
 /** Filter once for both ranking and aptitude so legal-pool rules stay aligned. */
-export function eligibleDeckCandidates(
+export function eligibleDeckCandidates<T extends CardListItem>(
   leader: CardListItem,
-  cards: CardListItem[],
+  cards: T[],
   regulations: DeckRegulations = {},
-): CardListItem[] {
+): T[] {
   const leaderColors = new Set(leader.colors);
   return cards.filter(
     (card) =>
       card.id !== leader.id &&
       card.cardType !== "LEADER" &&
-      card.verified &&
-      (card.source === "official_jp" || card.source === "official_en") &&
+      ["CHARACTER", "EVENT", "STAGE"].includes(card.cardType) &&
+      isVerifiedOfficialCard(card) &&
       card.colors.some((color) => leaderColors.has(color)) &&
       (regulations.perCardMax?.get(card.id) ?? 4) > 0,
+  );
+}
+
+export function isVerifiedOfficialCard(
+  card: Pick<CardListItem, "verified" | "source">,
+): boolean {
+  return (
+    card.verified &&
+    (card.source === "official_jp" || card.source === "official_en")
   );
 }
 
@@ -294,6 +312,45 @@ export function buildDeckCandidateRankingContext(
   }
 
   return { evidenceByCardId };
+}
+
+/**
+ * Shared preparation for every deterministic Deck Intelligence consumer.
+ * Optimizer and AI proposal generation use the same legality filter,
+ * relationship graph, aptitude calculation, and auto-style resolution.
+ */
+export function prepareDeckCandidateRanking<T extends CardListItem>(
+  leader: CardListItem,
+  cards: T[],
+  selection: DeckPreferenceSelection,
+  regulations: DeckRegulations = {},
+  persistedSynergies: RuleSynergy[] = [],
+): PreparedDeckCandidateRanking<T> {
+  const eligiblePool = eligibleDeckCandidates(leader, cards, regulations);
+  const analysisPool = seedAnalysisPool(leader, eligiblePool);
+  const rankingContext = buildDeckCandidateRankingContext(
+    leader,
+    analysisPool,
+    persistedSynergies,
+  );
+  const aptitudes = calculateLeaderStyleAptitudesFromContext(
+    leader,
+    analysisPool,
+    eligiblePool.length,
+    rankingContext,
+  );
+  const effectiveStyle =
+    selection.selectedStyle === "auto"
+      ? recommendedMainStyle(aptitudes)
+      : selection.selectedStyle;
+  return {
+    eligiblePool,
+    analysisPool,
+    rankingContext,
+    effectiveSelection: { ...selection, selectedStyle: effectiveStyle },
+    aptitudes,
+    effectiveStyle,
+  };
 }
 
 export function rankDeckCandidates(
@@ -489,11 +546,11 @@ export function recommendedMainStyle(
 }
 
 /** Small, style-neutral pre-cap that keeps graph construction bounded. */
-export function seedAnalysisPool(
+export function seedAnalysisPool<T extends CardListItem>(
   leader: CardListItem,
-  cards: CardListItem[],
+  cards: T[],
   cap = 360,
-): CardListItem[] {
+): T[] {
   if (cards.length <= cap) return cards;
   const realStyles = MAIN_STYLE_IDS.filter((style) => style !== "auto");
   return [...cards]
