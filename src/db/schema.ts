@@ -28,7 +28,12 @@ import type {
   CardCoachGuide,
   CardCoachLevel,
 } from "@/lib/card-coach-schema";
+import type {
+  DeckCoachGuide,
+  DeckCoachLevel,
+} from "@/lib/deck-coach-schema";
 export type { CardCoachLevel } from "@/lib/card-coach-schema";
+export type { DeckCoachLevel } from "@/lib/deck-coach-schema";
 
 /* ──────────────────────────────────────────────────────────────────────── */
 /* §5.1 Card foundation                                                     */
@@ -475,6 +480,40 @@ export const cardCoachGuides = sqliteTable(
     primaryKey({ columns: [t.cardId, t.level] }),
     index("idx_card_coach_guides_updated_at").on(t.updatedAt),
     index("idx_card_coach_guides_source_hash").on(t.sourceDataHash),
+  ],
+);
+
+/**
+ * Beginner-facing tactical guide for one saved, currently legal deck.
+ *
+ * `deck_hash` tracks leader + composition. `source_data_hash` tracks verified
+ * facts, active restrictions, deterministic metric inputs, prompt version,
+ * and any fresh Card Coach reference used for the generation.
+ */
+export const deckCoachGuides = sqliteTable(
+  "deck_coach_guides",
+  {
+    deckId: text()
+      .notNull()
+      .references(() => decks.id, { onDelete: "cascade" }),
+    level: text({ enum: ["easy"] }).$type<DeckCoachLevel>().notNull(),
+    deckHash: text().notNull(),
+    sourceDataHash: text().notNull(),
+    guideJson: text({ mode: "json" }).$type<DeckCoachGuide>().notNull(),
+    promptVersion: text().notNull(),
+    aiModelVersion: text().notNull(),
+    generatedAt: integer({ mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+    updatedAt: integer({ mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+  (t) => [
+    primaryKey({ columns: [t.deckId, t.level] }),
+    index("idx_deck_coach_guides_updated_at").on(t.updatedAt),
+    index("idx_deck_coach_guides_deck_hash").on(t.deckHash),
+    index("idx_deck_coach_guides_source_hash").on(t.sourceDataHash),
   ],
 );
 

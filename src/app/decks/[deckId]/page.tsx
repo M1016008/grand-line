@@ -2,11 +2,13 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { ColorChip } from "@/components/grand-line/color-chip";
+import { DeckCoachSection } from "@/components/grand-line/deck-coach-section";
 import { SiteHeader } from "@/components/grand-line/site-header";
 import { SourceBadge } from "@/components/grand-line/source-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { getDeckCoachGuideForPage } from "@/lib/deck-coach";
 import { getSavedDeck } from "@/lib/saved-decks";
 import { proxiedCardImage } from "@/lib/img";
 
@@ -26,6 +28,7 @@ export default async function SavedDeckPage({ params }: PageProps) {
   const { deckId } = await params;
   const deck = await getSavedDeck(deckId);
   if (!deck) notFound();
+  const coachGuide = await getDeckCoachGuideForPage(deck.id);
 
   return (
     <>
@@ -133,6 +136,12 @@ export default async function SavedDeckPage({ params }: PageProps) {
             </CardContent>
           </Card>
         </section>
+
+        <DeckCoachSection
+          deckId={deck.id}
+          deckLegal={deck.ruleReport.legal && deck.totalCards === 50}
+          guide={coachGuide}
+        />
       </main>
     </>
   );

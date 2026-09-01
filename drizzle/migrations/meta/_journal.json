@@ -64,6 +64,13 @@
       "when": 1788230400000,
       "tag": "0008_card_coach_guides",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1788259821598,
+      "tag": "0009_deck_coach_guides",
+      "breakpoints": true
     }
   ]
 }
