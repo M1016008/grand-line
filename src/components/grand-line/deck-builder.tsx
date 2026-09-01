@@ -192,9 +192,10 @@ export function DeckBuilder({
   }
 
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_360px]">
-      {/* Card pool */}
-      <section className="space-y-3">
+    <div className="space-y-8">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+        {/* Card pool */}
+        <section className="min-w-0 space-y-3">
         <div className="flex items-baseline justify-between gap-3">
           <h2 className="font-display text-xl tracking-wide">候補カード</h2>
           <span className="text-muted-foreground text-xs">
@@ -283,10 +284,10 @@ export function DeckBuilder({
             </p>
           ) : null}
         </ScrollArea>
-      </section>
+        </section>
 
-      {/* Right column: leader summary + draft */}
-      <aside className="space-y-4">
+        {/* Right column: leader summary + draft */}
+        <aside className="min-w-0 space-y-4">
         <Card className="border-primary/30 bg-card/60">
           <CardContent className="space-y-2 p-4">
             <div className="flex items-start justify-between">
@@ -345,7 +346,7 @@ export function DeckBuilder({
           </CardContent>
         </Card>
 
-        <Card className="border-border/40 bg-card/40">
+        <Card id="deck-save" className="border-border/40 bg-card/40">
           <CardContent className="space-y-3 p-4">
             <div>
               <label
@@ -393,12 +394,6 @@ export function DeckBuilder({
             ) : null}
           </CardContent>
         </Card>
-
-        <AiDeckProposer
-          leader={leader}
-          pool={pool}
-          styleAptitudes={styleAptitudes}
-        />
 
         <RuleReport violations={report.violations} legal={report.legal} />
 
@@ -474,7 +469,16 @@ export function DeckBuilder({
             ※ モックデータで構築中。実カードでの構築はスクレイプ後に有効化されます。
           </p>
         ) : null}
-      </aside>
+        </aside>
+      </div>
+
+      <section aria-label="Deck Intelligence" className="min-w-0 scroll-mt-6">
+        <AiDeckProposer
+          leader={leader}
+          pool={pool}
+          styleAptitudes={styleAptitudes}
+        />
+      </section>
     </div>
   );
 }

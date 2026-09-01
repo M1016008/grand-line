@@ -14,8 +14,8 @@ test("Deck Intelligence UI sends one style and zero to three feature tags", asyn
     "grand-line",
     "ai-deck-proposer.tsx",
   );
-  assert.match(component, /Main Style · 1つ/);
-  assert.match(component, /Feature Tags · 0〜3個/);
+  assert.match(component, /Main Style/);
+  assert.match(component, /Feature Tags/);
   assert.match(component, /おすすめ1案/);
   assert.match(component, /3案を比較/);
   assert.match(component, /mode: generationMode/);
@@ -67,11 +67,11 @@ test("proposal response displays the server-selected style and tags", async () =
     "grand-line",
     "ai-deck-proposer.tsx",
   );
-  assert.match(component, /proposal\.selectedStyle/);
+  assert.match(component, /MAIN_STYLE_LABELS\[proposal\.selectedStyle\]/);
   assert.match(component, /proposal\.selectedTags\.map/);
   assert.match(component, /proposal\.deckConceptJa/);
-  assert.match(component, /c\.roleJa/);
-  assert.match(component, /c\.selectionReasonJa/);
+  assert.match(component, /item\.roleJa/);
+  assert.match(component, /item\.selectionReasonJa/);
   assert.match(component, /proposal\.metrics\.triggerRatio/);
 });
 
@@ -86,21 +86,89 @@ test("compare UI renders three profile cards, details, and draft apply actions",
   assert.match(component, /variant\.variantLabel/);
   assert.match(component, /詳しく比較/);
   assert.match(component, /指標/);
-  assert.match(component, /VARIANT_PROFILE_FOCUS_LABELS\[profile\]/);
   assert.match(component, /VARIANT_PERSONALITY_JA\[profile\]/);
-  assert.match(component, /構築の性格/);
+  assert.match(component, /この案だけ/);
   assert.match(component, /構築思想/);
-  assert.match(component, /この案だけの採用カード/);
   assert.match(component, /cardComparison\.uniqueCardIds/);
-  assert.match(component, /枚数を増やした主なカード/);
+  assert.match(component, /推奨より増/);
+  assert.match(component, /推奨より減/);
   assert.match(component, /高い数値が構築の優劣を決めるものではありません/);
   assert.match(component, /この構築を下書きに反映/);
   assert.match(component, /DeckBattleBenchmark/);
   assert.match(component, /personalityByProfile=\{VARIANT_PERSONALITY_JA\}/);
-  assert.match(component, /onClick=\{\(\) => onApply\(variant\)\}/);
+  assert.match(component, /onApply\(variant, \{/);
   assert.match(component, /applyDeckCopyEntries\(entries, poolById, replace\)/);
   assert.match(component, /提案カードを下書きへ反映できませんでした/);
   assert.match(component, /catch \{/);
   assert.doesNotMatch(component, /metrics\.composite|label: "Composite"/);
   assert.doesNotMatch(component, /絶対おすすめ|最強/);
+});
+
+test("workflow keeps single and compare generation while progressively disclosing results", async () => {
+  const component = await source(
+    "src",
+    "components",
+    "grand-line",
+    "ai-deck-proposer.tsx",
+  );
+  assert.match(component, /useState<DeckIntelligenceGenerationMode>\("single"\)/);
+  assert.match(component, /generationMode === "compare"/);
+  assert.match(component, /setCurrentStep\(2\)/);
+  assert.match(component, /setExpandedStep\(2\)/);
+  assert.match(component, /expandedStep === 1/);
+  assert.match(component, /expandedStep === 2/);
+  assert.match(component, /aria-expanded=\{showAptitudes\}/);
+  assert.match(component, /aria-expanded=\{showDetails\}/);
+  assert.match(component, /aria-expanded=\{expanded\}/);
+});
+
+test("applied proposal status is persistent in the workspace and Save remains manual", async () => {
+  const component = await source(
+    "src",
+    "components",
+    "grand-line",
+    "ai-deck-proposer.tsx",
+  );
+  assert.match(component, /現在の下書き/);
+  assert.match(component, /下書きに反映済み/);
+  assert.match(component, /自動保存はしていません/);
+  assert.match(component, /document\.getElementById\("deck-save"\)/);
+  assert.doesNotMatch(component, /fetch\("\/api\/decks"/);
+  assert.match(component, /if \(benchmarkComplete\) completedSteps\.add\(3\);/);
+  assert.match(component, /if \(optimizerComplete\) completedSteps\.add\(4\);/);
+});
+
+test("benchmark completion flags are reset on rerun and set only by benchmark completion", async () => {
+  const component = await source(
+    "src",
+    "components",
+    "grand-line",
+    "ai-deck-proposer.tsx",
+  );
+  const benchmark = await source(
+    "src",
+    "components",
+    "grand-line",
+    "deck-battle-benchmark.tsx",
+  );
+  assert.match(
+    component,
+    /onBenchmarkStart=\{[\s\S]*setBenchmarkComplete\(false\);[\s\S]*setOptimizerComplete\(false\);/,
+  );
+  assert.match(benchmark, /onBenchmarkStart\?\.\(\);/);
+  assert.match(component, /onBenchmarkComplete=\{[^\n]*setBenchmarkComplete\(true\)/);
+  assert.doesNotMatch(benchmark, /onBenchmarkComplete.*setOptimizerComplete\(true\)/);
+});
+
+test("deck-save anchor targets the save deck section", async () => {
+  const builder = await source(
+    "src",
+    "components",
+    "grand-line",
+    "deck-builder.tsx",
+  );
+  assert.match(
+    builder,
+    /id="deck-save"[\s\S]*>\s*<CardContent[\s\S]*<label[\s\S]*>\s*Save deck/im,
+  );
 });

@@ -4,6 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { DeckVariantsSuggestion } from "@/ai/deck-suggestion";
 import { DeckOptimizer } from "@/components/grand-line/deck-optimizer";
+import {
+  DeckIntelligenceStepPanel,
+  type DeckIntelligenceStep,
+  type DeckIntelligenceStepStatus,
+} from "@/components/grand-line/deck-intelligence-workflow";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -16,7 +21,6 @@ import {
 } from "@/components/ui/select";
 import type { CardListItem } from "@/lib/cards";
 import {
-  BENCHMARK_DISCLOSURE_JA,
   BENCHMARK_SIZE_OPTIONS,
   type BenchmarkVariantMetrics,
   type DeckBattleBenchmarkResult,
@@ -38,7 +42,18 @@ interface DeckBattleBenchmarkProps {
   leader: CardListItem;
   pool: CardListItem[];
   personalityByProfile: Record<VariantProfile, string>;
-  onApplyCards: (cards: DeckCopyEntry[]) => boolean;
+  currentStep: DeckIntelligenceStep;
+  expandedStep: DeckIntelligenceStep | null;
+  onToggleStep: (step: DeckIntelligenceStep) => void;
+  onAdvanceStep: (step: DeckIntelligenceStep) => void;
+  onBenchmarkStart?: () => void;
+  onBenchmarkComplete: () => void;
+  onOptimizerComplete: () => void;
+  onApplyCards: (
+    cards: DeckCopyEntry[],
+    status: { key: string; label: string },
+  ) => boolean;
+  appliedDraftKey: string | null;
 }
 
 interface SavedDeckOption {
@@ -63,9 +78,16 @@ export function DeckBattleBenchmark({
   leader,
   pool,
   personalityByProfile,
+  currentStep,
+  expandedStep,
+  onToggleStep,
+  onAdvanceStep,
+  onBenchmarkStart,
+  onBenchmarkComplete,
+  onOptimizerComplete,
   onApplyCards,
+  appliedDraftKey,
 }: DeckBattleBenchmarkProps) {
-  const [open, setOpen] = useState(false);
   const [savedDecks, setSavedDecks] = useState<SavedDeckOption[]>([]);
   const [opponentValue, setOpponentValue] = useState(`synthetic:${leader.id}`);
   const [cpuSkill, setCpuSkill] = useState<CpuSkill>("level3");
@@ -73,6 +95,7 @@ export function DeckBattleBenchmark({
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<BenchmarkApiResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showRunSettings, setShowRunSettings] = useState(false);
   const [variantOverrides, setVariantOverrides] = useState<
     Partial<Record<VariantProfile, DeckCopyEntry[]>>
   >({});
@@ -127,6 +150,8 @@ export function DeckBattleBenchmark({
   }, []);
 
   async function runBenchmark() {
+    onAdvanceStep(3);
+    onBenchmarkStart?.();
     setRunning(true);
     setError(null);
     setResult(null);
@@ -157,6 +182,8 @@ export function DeckBattleBenchmark({
         );
       }
       setResult((await request.json()) as BenchmarkApiResponse);
+      setShowRunSettings(false);
+      onBenchmarkComplete();
     } catch (caught) {
       setError((caught as Error).message);
     } finally {
@@ -164,149 +191,174 @@ export function DeckBattleBenchmark({
     }
   }
 
-  if (!open) {
-    return (
-      <div className="border-border/40 bg-background/30 rounded-md border p-3">
-        <Button
-          type="button"
-          variant="secondary"
-          className="w-full"
-          onClick={() => setOpen(true)}
-        >
-          3案を対戦ベンチマーク
-        </Button>
-        <p className="text-muted-foreground mt-2 text-[10px]">
-          同じ相手・seed・先攻後攻・CPU条件で、3構築の挙動差を比較します。
-        </p>
-      </div>
-    );
-  }
+  const benchmarkStatus: DeckIntelligenceStepStatus =
+    currentStep === 3 ? "current" : result ? "complete" : "upcoming";
 
   return (
-    <div className="border-primary/25 bg-background/30 space-y-4 rounded-md border p-3">
-      <div>
-        <div className="text-primary text-[10px] tracking-[0.25em] uppercase">
-          Battle Benchmark / 対戦ベンチマーク
+    <div className="space-y-3">
+      <DeckIntelligenceStepPanel
+        step={3}
+        title="対戦ベンチマーク"
+        status={benchmarkStatus}
+        summary={
+          result
+            ? `${result.benchmark.opponent.name}・${result.benchmark.schedule.cpuSkill}・各${result.benchmark.schedule.gamesPerVariant.toLocaleString()}試合`
+            : "3案を同じ相手・seed・先攻後攻・CPU条件で比較"
+        }
+        expanded={expandedStep === 3}
+        onToggle={() => onToggleStep(3)}
+      >
+        <div className="space-y-4">
+          {result ? (
+            <>
+              <BenchmarkResults
+                response={result}
+                personalityByProfile={personalityByProfile}
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                aria-expanded={showRunSettings}
+                aria-controls="benchmark-run-settings"
+                onClick={() => setShowRunSettings((current) => !current)}
+              >
+                {showRunSettings ? "再実行条件を閉じる" : "条件を変更して再実行"}
+              </Button>
+            </>
+          ) : (
+            <div>
+              <h5 className="font-display text-base">3案を同条件で対戦比較</h5>
+              <p className="text-muted-foreground mt-1 text-[10px]">
+                相手・CPU・試行数を選び、推奨・安定・特化の挙動差を確認します。
+              </p>
+            </div>
+          )}
+
+          {!result || showRunSettings ? (
+            <div id="benchmark-run-settings" className="space-y-3">
+              <div className="grid gap-3 md:grid-cols-3">
+                <label className="space-y-1">
+                  <span className="text-muted-foreground text-[10px]">対戦相手</span>
+                  <Select value={opponentValue} onValueChange={setOpponentValue}>
+                    <SelectTrigger aria-label="Benchmark opponent" className="w-full text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {savedDecks.map((deck) => (
+                        <SelectItem key={deck.id} value={`saved:${deck.id}`}>
+                          保存済み — {deck.name} ({deck.leader.name})
+                        </SelectItem>
+                      ))}
+                      {syntheticLeaders.map((opponentLeader) => (
+                        <SelectItem
+                          key={`synthetic:${opponentLeader.id}`}
+                          value={`synthetic:${opponentLeader.id}`}
+                        >
+                          Synthetic — {opponentLeader.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-muted-foreground text-[10px]">CPU</span>
+                  <Select
+                    value={cpuSkill}
+                    onValueChange={(value) => setCpuSkill(value as CpuSkill)}
+                  >
+                    <SelectTrigger aria-label="Benchmark CPU level" className="w-full text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {CPU_LEVELS.map((level) => (
+                        <SelectItem key={level.value} value={level.value}>
+                          {level.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-muted-foreground text-[10px]">試行数</span>
+                  <Select
+                    value={String(games)}
+                    onValueChange={(value) => setGames(Number(value))}
+                  >
+                    <SelectTrigger aria-label="Benchmark size" className="w-full text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {BENCHMARK_SIZE_OPTIONS.map((option) => (
+                        <SelectItem key={option.id} value={String(option.games)}>
+                          {option.labelJa}: {option.games.toLocaleString()} / 案
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+              </div>
+
+              <Button
+                type="button"
+                className="w-full sm:w-auto sm:min-w-56"
+                disabled={running || !opponentValue}
+                onClick={runBenchmark}
+              >
+                {running
+                  ? `${games.toLocaleString()} × 3案を実行中…`
+                  : result
+                    ? "この条件で再実行"
+                    : "比較を実行"}
+              </Button>
+              <p className="text-muted-foreground text-[9px]">
+                保存済みデッキは実行時にactive restrictionsで再検証します。
+              </p>
+            </div>
+          ) : null}
+
+          {error ? (
+            <div className="border-destructive/40 bg-destructive/10 text-destructive rounded-md border p-3 text-xs">
+              {error}
+            </div>
+          ) : null}
         </div>
-        <h4 className="font-display mt-1 text-base">構築による挙動差</h4>
-        <p className="text-muted-foreground mt-1 text-[10px] leading-relaxed">
-          {BENCHMARK_DISCLOSURE_JA}
-        </p>
-      </div>
-
-      <div className="grid gap-3 md:grid-cols-3">
-        <label className="space-y-1">
-          <span className="text-muted-foreground text-[10px]">1. Opponent</span>
-          <Select value={opponentValue} onValueChange={setOpponentValue}>
-            <SelectTrigger aria-label="Benchmark opponent" className="w-full text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {savedDecks.map((deck) => (
-                <SelectItem key={deck.id} value={`saved:${deck.id}`}>
-                  保存済み — {deck.name} ({deck.leader.name})
-                </SelectItem>
-              ))}
-              {syntheticLeaders.map((opponentLeader) => (
-                <SelectItem
-                  key={`synthetic:${opponentLeader.id}`}
-                  value={`synthetic:${opponentLeader.id}`}
-                >
-                  Synthetic benchmark opponent — {opponentLeader.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-muted-foreground text-[9px]">
-            保存済みデッキは実行時に現在のactive restrictionsで再検証します。
-          </p>
-        </label>
-
-        <label className="space-y-1">
-          <span className="text-muted-foreground text-[10px]">2. CPU level</span>
-          <Select
-            value={cpuSkill}
-            onValueChange={(value) => setCpuSkill(value as CpuSkill)}
-          >
-            <SelectTrigger aria-label="Benchmark CPU level" className="w-full text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {CPU_LEVELS.map((level) => (
-                <SelectItem key={level.value} value={level.value}>
-                  {level.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </label>
-
-        <label className="space-y-1">
-          <span className="text-muted-foreground text-[10px]">3. Benchmark size</span>
-          <Select
-            value={String(games)}
-            onValueChange={(value) => setGames(Number(value))}
-          >
-            <SelectTrigger aria-label="Benchmark size" className="w-full text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {BENCHMARK_SIZE_OPTIONS.map((option) => (
-                <SelectItem key={option.id} value={String(option.games)}>
-                  {option.labelJa}: {option.games.toLocaleString()} games / variant
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </label>
-      </div>
-
-      <div>
-        <div className="text-muted-foreground mb-1 text-[10px]">4. Run</div>
-        <Button
-          type="button"
-          className="w-full"
-          disabled={running || !opponentValue}
-          onClick={runBenchmark}
-        >
-          {running
-            ? `${games.toLocaleString()} × 3案を実行中…`
-            : "対戦ベンチマークを実行"}
-        </Button>
-      </div>
-
-      {error ? (
-        <div className="border-destructive/40 bg-destructive/10 text-destructive rounded-md border p-3 text-xs">
-          {error}
-        </div>
-      ) : null}
+      </DeckIntelligenceStepPanel>
 
       {result ? (
-        <>
-          <BenchmarkResults
-            response={result}
-            personalityByProfile={personalityByProfile}
-          />
-          <DeckOptimizer
-            response={response}
-            leader={leader}
-            pool={pool}
-            variantCards={variantCards}
-            opponent={result.benchmark.opponent}
-            cpuSkill={result.benchmark.schedule.cpuSkill}
-            maxTurns={result.benchmark.schedule.maxTurns}
-            onApplyCandidate={(profile, candidate) => {
-              const applied = onApplyCards(candidate.resultingDeck.cards);
-              if (!applied) return false;
-              setVariantOverrides((current) => ({
-                ...current,
-                [profile]: candidate.resultingDeck.cards,
-              }));
-              return true;
-            }}
-            onRebenchmark={() => void runBenchmark()}
-          />
-        </>
+        <DeckOptimizer
+          response={response}
+          leader={leader}
+          pool={pool}
+          variantCards={variantCards}
+          opponent={result.benchmark.opponent}
+          cpuSkill={result.benchmark.schedule.cpuSkill}
+          maxTurns={result.benchmark.schedule.maxTurns}
+          current={currentStep === 4}
+          expanded={expandedStep === 4}
+          onToggle={() => onToggleStep(4)}
+          onStart={() => onAdvanceStep(4)}
+          onComplete={onOptimizerComplete}
+          appliedDraftKey={appliedDraftKey}
+          onApplyCandidate={(profile, candidate) => {
+            const applied = onApplyCards(candidate.resultingDeck.cards, {
+              key: `optimizer:${candidate.candidateId}`,
+              label: "Optimizer候補反映済み",
+            });
+            if (!applied) return false;
+            setVariantOverrides((current) => ({
+              ...current,
+              [profile]: candidate.resultingDeck.cards,
+            }));
+            return true;
+          }}
+          onRebenchmark={() => {
+            onAdvanceStep(3);
+            void runBenchmark();
+          }}
+        />
       ) : null}
     </div>
   );
@@ -319,6 +371,7 @@ function BenchmarkResults({
   response: BenchmarkApiResponse;
   personalityByProfile: Record<VariantProfile, string>;
 }) {
+  const [showDetails, setShowDetails] = useState(false);
   const { benchmark } = response;
   const metricRows: Array<{
     label: string;
@@ -381,40 +434,22 @@ function BenchmarkResults({
                   {VARIANT_PROFILE_LABELS[profile]}
                 </Badge>
                 <div>
-                  <div className="text-muted-foreground text-[9px] tracking-widest uppercase">
-                    構築の性格
-                  </div>
-                  <p className="mt-1 text-[10px] leading-relaxed">
-                    {personalityByProfile[profile]}
-                  </p>
-                </div>
-                <div>
-                  <div className="text-muted-foreground text-[9px]">
-                    Heuristic win rate
-                  </div>
+                  <div className="text-muted-foreground text-[9px]">試行上の勝率</div>
                   <div className="font-mono text-base">
                     {percent(metrics.heuristicWinRate)}
                   </div>
-                  <div className="text-muted-foreground font-mono text-[9px]">
-                    95% CI: {percent(metrics.heuristicWinRateCi95.lower)}–
-                    {percent(metrics.heuristicWinRateCi95.upper)}
-                  </div>
                 </div>
-                <div className="grid grid-cols-2 gap-1 font-mono text-[9px]">
-                  <span>先攻 {percent(metrics.firstPlayerWinRate)}</span>
-                  <span>後攻 {percent(metrics.secondPlayerWinRate)}</span>
-                  <span>平均 {metrics.avgTurns.toFixed(1)} turn</span>
-                  <span>DON {percent(metrics.averageDonEfficiency)}</span>
-                </div>
-                <div className="text-[10px]">
-                  <span className="text-muted-foreground">主な勝ち方: </span>
-                  {primaryWinReason(metrics.winReasons)}
-                </div>
-                <div className="text-[10px]">
-                  <span className="text-muted-foreground">Top contributors: </span>
-                  {metrics.topContributors
-                    .map((contribution) => contribution.name)
-                    .join(" / ") || "なし"}
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[9px]">
+                  <span>95% CI</span>
+                  <span>{percent(metrics.heuristicWinRateCi95.lower)}–{percent(metrics.heuristicWinRateCi95.upper)}</span>
+                  <span>先攻</span>
+                  <span>{percent(metrics.firstPlayerWinRate)}</span>
+                  <span>後攻</span>
+                  <span>{percent(metrics.secondPlayerWinRate)}</span>
+                  <span>平均ターン</span>
+                  <span>{metrics.avgTurns.toFixed(1)}</span>
+                  <span>DON効率</span>
+                  <span>{percent(metrics.averageDonEfficiency)}</span>
                 </div>
               </CardContent>
             </Card>
@@ -422,60 +457,92 @@ function BenchmarkResults({
         })}
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[680px] border-collapse text-left text-[10px]">
-          <thead>
-            <tr className="border-border/40 border-b">
-              <th className="p-2">指標</th>
-              {VARIANT_PROFILE_IDS.map((profile) => (
-                <th key={profile} className="p-2">
-                  {VARIANT_PROFILE_LABELS[profile]}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {metricRows.map((row) => (
-              <tr key={row.label} className="border-border/20 border-b last:border-0">
-                <th className="text-muted-foreground p-2 font-medium">
-                  {row.label}
-                </th>
-                {VARIANT_PROFILE_IDS.map((profile) => (
-                  <td key={profile} className="p-2 font-mono">
-                    {row.render(benchmark.variants[profile])}
-                  </td>
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        aria-expanded={showDetails}
+        aria-controls="benchmark-detailed-comparison"
+        onClick={() => setShowDetails((value) => !value)}
+      >
+        {showDetails ? "詳しい比較を閉じる" : "詳しい比較"}
+      </Button>
+
+      {showDetails ? (
+        <div id="benchmark-detailed-comparison" className="space-y-4">
+          <div className="grid gap-2 lg:grid-cols-3">
+            {VARIANT_PROFILE_IDS.map((profile) => {
+              const metrics = benchmark.variants[profile];
+              return (
+                <ResultSection key={profile} title={VARIANT_PROFILE_LABELS[profile]}>
+                  <p>{personalityByProfile[profile]}</p>
+                  <p>主な勝ち方: {primaryWinReason(metrics.winReasons)}</p>
+                  <p>
+                    主な寄与カード: {metrics.topContributors
+                      .map((contribution) => contribution.name)
+                      .join(" / ") || "なし"}
+                  </p>
+                </ResultSection>
+              );
+            })}
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[680px] border-collapse text-left text-[10px]">
+              <thead>
+                <tr className="border-border/40 border-b">
+                  <th className="p-2">指標</th>
+                  {VARIANT_PROFILE_IDS.map((profile) => (
+                    <th key={profile} className="p-2">
+                      {VARIANT_PROFILE_LABELS[profile]}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {metricRows.map((row) => (
+                  <tr key={row.label} className="border-border/20 border-b last:border-0">
+                    <th className="text-muted-foreground p-2 font-medium">
+                      {row.label}
+                    </th>
+                    {VARIANT_PROFILE_IDS.map((profile) => (
+                      <td key={profile} className="p-2 font-mono">
+                        {row.render(benchmark.variants[profile])}
+                      </td>
+                    ))}
+                  </tr>
                 ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+              </tbody>
+            </table>
+          </div>
 
-      <div className="grid gap-3 md:grid-cols-2">
-        <ResultSection title="Relative metrics">
-          {benchmark.relativeMetrics.map((relative) => (
-            <p key={`${relative.leftProfile}:${relative.rightProfile}`}>
-              {VARIANT_PROFILE_LABELS[relative.leftProfile]} vs {VARIANT_PROFILE_LABELS[relative.rightProfile]}: win {signedPoints(relative.winRateDelta)} / turns {signed(relative.avgTurnsDelta)} / DON {signedPoints(relative.donEfficiencyDelta)} / first {signedPoints(relative.firstPlayerDelta)} / second {signedPoints(relative.secondPlayerDelta)}
-            </p>
-          ))}
-        </ResultSection>
-        <ResultSection title="Paired outcomes">
-          <p>3案すべて勝ち: {benchmark.pairedOutcomes.allThreeWin}</p>
-          <p>3案すべて負け: {benchmark.pairedOutcomes.allThreeLose}</p>
-          <p>推奨のみ勝ち: {benchmark.pairedOutcomes.recommendedOnlyWins}</p>
-          <p>安定のみ勝ち: {benchmark.pairedOutcomes.consistencyOnlyWins}</p>
-          <p>特化のみ勝ち: {benchmark.pairedOutcomes.specializationOnlyWins}</p>
-          <p>2案が勝ち: {benchmark.pairedOutcomes.twoVariantsWin}</p>
-        </ResultSection>
-      </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <ResultSection title="案ごとの差分">
+              {benchmark.relativeMetrics.map((relative) => (
+                <p key={`${relative.leftProfile}:${relative.rightProfile}`}>
+                  {VARIANT_PROFILE_LABELS[relative.leftProfile]} vs {VARIANT_PROFILE_LABELS[relative.rightProfile]}: win {signedPoints(relative.winRateDelta)} / turns {signed(relative.avgTurnsDelta)} / DON {signedPoints(relative.donEfficiencyDelta)} / first {signedPoints(relative.firstPlayerDelta)} / second {signedPoints(relative.secondPlayerDelta)}
+                </p>
+              ))}
+            </ResultSection>
+            <ResultSection title="同一seedでの結果">
+              <p>3案すべて勝ち: {benchmark.pairedOutcomes.allThreeWin}</p>
+              <p>3案すべて負け: {benchmark.pairedOutcomes.allThreeLose}</p>
+              <p>推奨のみ勝ち: {benchmark.pairedOutcomes.recommendedOnlyWins}</p>
+              <p>安定のみ勝ち: {benchmark.pairedOutcomes.consistencyOnlyWins}</p>
+              <p>特化のみ勝ち: {benchmark.pairedOutcomes.specializationOnlyWins}</p>
+              <p>2案が勝ち: {benchmark.pairedOutcomes.twoVariantsWin}</p>
+            </ResultSection>
+          </div>
 
-      <ResultSection title="Deterministic interpretation">
-        <ul className="list-inside list-disc space-y-1">
-          {benchmark.interpretationsJa.map((interpretation) => (
-            <li key={interpretation}>{interpretation}</li>
-          ))}
-        </ul>
-      </ResultSection>
+          <ResultSection title="決定論的な読み取り">
+            <ul className="list-inside list-disc space-y-1">
+              {benchmark.interpretationsJa.map((interpretation) => (
+                <li key={interpretation}>{interpretation}</li>
+              ))}
+            </ul>
+          </ResultSection>
+        </div>
+      ) : null}
 
       <p className="text-source-unverified text-[10px] leading-relaxed">
         95% CIはPractice engine内部の反復試行に対する統計的不確実性です。公式ゲーム環境への精度保証ではありません。{benchmark.disclosureJa}
