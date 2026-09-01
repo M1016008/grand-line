@@ -18,6 +18,9 @@ test("Deck Intelligence UI sends one style and zero to three feature tags", asyn
   assert.match(component, /Feature Tags · 0〜3個/);
   assert.match(component, /JSON\.stringify\(\{ selectedStyle, selectedTags \}\)/);
   assert.match(component, /selectedTags\.length >= MAX_FEATURE_TAGS/);
+  assert.match(component, /Leader Style Aptitude/);
+  assert.match(component, /renderStars/);
+  assert.match(component, /相性低め/);
   assert.doesNotMatch(component, /\[preference, setPreference\]/);
   assert.doesNotMatch(component, /JSON\.stringify\(\{ preference/);
 });
@@ -37,6 +40,8 @@ test("Deck suggestion API validates style tags and loads active restrictions", a
   assert.match(route, /new Set\(tags\)\.size === tags\.length/);
   assert.match(route, /await Promise\.all/);
   assert.match(route, /activeRegulations\(\)/);
+  assert.match(route, /readVerifiedCardFactsByIdsFromDb/);
+  assert.match(route, /readAiSynergiesForLeader/);
   assert.match(route, /restrictions_unavailable/);
 });
 
@@ -49,4 +54,8 @@ test("proposal response displays the server-selected style and tags", async () =
   );
   assert.match(component, /proposal\.selectedStyle/);
   assert.match(component, /proposal\.selectedTags\.map/);
+  assert.match(component, /proposal\.deckConceptJa/);
+  assert.match(component, /c\.roleJa/);
+  assert.match(component, /c\.selectionReasonJa/);
+  assert.match(component, /proposal\.metrics\.triggerRatio/);
 });

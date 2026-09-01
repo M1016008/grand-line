@@ -19,7 +19,9 @@ import {
   isVerifiedOfficialDeckFact,
 } from "@/ai/deck-suggestion";
 import { MissingApiKeyError } from "@/ai/client";
+import { db } from "@/db";
 import { getCard, listCards } from "@/lib/cards";
+import { readVerifiedCardFactsByIdsFromDb } from "@/lib/card-coach-storage";
 import {
   FEATURE_TAG_IDS,
   MAIN_STYLE_IDS,
@@ -29,6 +31,7 @@ import {
   activeRegulations,
   DeckRegulationsUnavailableError,
 } from "@/lib/saved-decks";
+import { readAiSynergiesForLeader } from "@/lib/synergy-data";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -69,16 +72,6 @@ export async function POST(req: Request, { params }: RouteContext) {
       { status: 404 },
     );
   }
-  if (!isVerifiedOfficialDeckFact(leader)) {
-    return NextResponse.json(
-      {
-        error: "unverified_leader",
-        detail: `${leaderId} does not have verified official facts.`,
-      },
-      { status: 409 },
-    );
-  }
-
   let pool: Awaited<ReturnType<typeof listCards>>;
   let regulations: Awaited<ReturnType<typeof activeRegulations>>;
   try {
@@ -101,13 +94,32 @@ export async function POST(req: Request, { params }: RouteContext) {
     throw err;
   }
 
+  const [verifiedFacts, persistedSynergies] = await Promise.all([
+    readVerifiedCardFactsByIdsFromDb(
+      db,
+      [leaderId, ...pool.cards.map((card) => card.id)],
+    ),
+    readAiSynergiesForLeader(leaderId),
+  ]);
+  const verifiedLeader = verifiedFacts.get(leaderId);
+  if (!verifiedLeader || !isVerifiedOfficialDeckFact(verifiedLeader)) {
+    return NextResponse.json(
+      {
+        error: "unverified_leader",
+        detail: `${leaderId} does not have verified official facts.`,
+      },
+      { status: 409 },
+    );
+  }
+
   try {
     const suggestion = await proposeDeck({
-      leader,
-      pool: pool.cards,
+      leader: verifiedLeader,
+      pool: [...verifiedFacts.values()],
       selectedStyle: body.selectedStyle,
       selectedTags: body.selectedTags,
       regulations,
+      persistedSynergies,
     });
     return NextResponse.json(suggestion);
   } catch (err) {

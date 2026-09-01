@@ -31,6 +31,47 @@ export interface SynergyGraphData {
   source: "rules" | "rules+ai";
 }
 
+/**
+ * Read the persisted AI relationship layer for one leader. Consumers that
+ * already own a verified candidate pool can reuse this without re-fetching
+ * cards or duplicating the graph merge/query logic.
+ */
+export async function readAiSynergiesForLeader(
+  leaderId: string,
+): Promise<RuleSynergy[]> {
+  try {
+    const rows = await db
+      .select({
+        fromCardId: schema.cardSynergies.fromCardId,
+        toCardId: schema.cardSynergies.toCardId,
+        relationType: schema.cardSynergies.relationType,
+        strength: schema.cardSynergies.strength,
+        reasoningJa: schema.cardSynergies.reasoningJa,
+        reasoningEn: schema.cardSynergies.reasoningEn,
+      })
+      .from(schema.cardSynergies)
+      .where(
+        and(
+          eq(schema.cardSynergies.detectedBy, "ai"),
+          or(
+            eq(schema.cardSynergies.fromCardId, leaderId),
+            eq(schema.cardSynergies.toCardId, leaderId),
+          )!,
+        ),
+      );
+    return rows.map((row) => ({
+      fromCardId: row.fromCardId,
+      toCardId: row.toCardId,
+      relationType: row.relationType,
+      strength: row.strength,
+      reasoningJa: row.reasoningJa ?? "",
+      reasoningEn: row.reasoningEn ?? "",
+    }));
+  } catch {
+    return [];
+  }
+}
+
 export async function getSynergyGraph(leaderId: string): Promise<SynergyGraphData | null> {
   // First fetch the leader directly so we know its colours.
   const all = await listCards({ pageSize: 5000 });
@@ -53,40 +94,8 @@ export async function getSynergyGraph(leaderId: string): Promise<SynergyGraphDat
   const ruleEdges = detectRuleSynergies(leader, pool);
 
   // Pull AI-tagged rows that touch the leader (either side of the edge).
-  // We deliberately don't pull every AI row — most are for other leaders
-  // and would just bloat the merge.
-  let aiEdges: RuleSynergy[] = [];
-  try {
-    const rows = await db
-      .select({
-        fromCardId: schema.cardSynergies.fromCardId,
-        toCardId: schema.cardSynergies.toCardId,
-        relationType: schema.cardSynergies.relationType,
-        strength: schema.cardSynergies.strength,
-        reasoningJa: schema.cardSynergies.reasoningJa,
-        reasoningEn: schema.cardSynergies.reasoningEn,
-      })
-      .from(schema.cardSynergies)
-      .where(
-        and(
-          eq(schema.cardSynergies.detectedBy, "ai"),
-          or(
-            eq(schema.cardSynergies.fromCardId, leader.id),
-            eq(schema.cardSynergies.toCardId, leader.id),
-          )!,
-        ),
-      );
-    aiEdges = rows.map((r) => ({
-      fromCardId: r.fromCardId,
-      toCardId: r.toCardId,
-      relationType: r.relationType,
-      strength: r.strength,
-      reasoningJa: r.reasoningJa ?? "",
-      reasoningEn: r.reasoningEn ?? "",
-    }));
-  } catch {
-    /* table missing or db unreachable — ignore, stay rules-only. */
-  }
+  // We deliberately don't pull every AI row — most are for other leaders.
+  const aiEdges = await readAiSynergiesForLeader(leader.id);
 
   // Merge: AI rows override rule rows on the same (from, to, type) key.
   const key = (e: RuleSynergy) =>
