@@ -21,4 +21,9 @@ test("Battle UI exposes coverage, unsupported warning, counter, Trigger and DON 
   assert.match(source, /カウンターを使わず受ける/);
   assert.match(source, /Trigger発動/);
   assert.match(source, /DON!!付与/);
+  assert.match(source, /Leader:/);
+  assert.match(source, /アタック対象を選択/);
+  assert.match(source, /選ばない/);
+  assert.match(source, /加えない/);
+  assert.match(source, /STAGE/);
 });

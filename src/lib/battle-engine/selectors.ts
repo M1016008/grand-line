@@ -111,6 +111,59 @@ export function blockerTargets(
     }));
 }
 
+/** Official normal attack targets: opposing Leader or a rested opposing Character. */
+export function legalAttackTargets(
+  state: BattleState,
+  attacker: BattlePlayer,
+): BattleTargetRef[] {
+  const defender = otherPlayer(attacker);
+  const side = sideOf(state, defender);
+  return [
+    {
+      owner: defender,
+      zone: "leader" as const,
+      instanceId: `${defender}:leader`,
+      cardId: side.leader.id,
+      label: `${side.leader.name} (リーダー)`,
+    },
+    ...side.board
+      .filter((zone) => zone.rested)
+      .map((zone) => ({
+        owner: defender,
+        zone: "character" as const,
+        instanceId: zone.instanceId,
+        cardId: zone.card.id,
+        label: `${zone.card.name} (レスト / power ${effectiveCharacterPower(zone)})`,
+      })),
+  ];
+}
+
+export function chooseCpuAttackTarget(
+  state: BattleState,
+  attacker: BattlePlayer,
+  attackPower: number,
+): BattleTargetRef {
+  const targets = legalAttackTargets(state, attacker);
+  const koTargets = targets
+    .filter((target) => target.zone === "character")
+    .filter((target) => {
+      const zone = sideOf(state, target.owner).board.find(
+        (item) => item.instanceId === target.instanceId,
+      );
+      return zone && effectiveCharacterPower(zone) <= attackPower;
+    })
+    .sort((a, b) => {
+      const aZone = sideOf(state, a.owner).board.find((item) => item.instanceId === a.instanceId);
+      const bZone = sideOf(state, b.owner).board.find((item) => item.instanceId === b.instanceId);
+      return (
+        (bZone ? effectiveCharacterPower(bZone) : 0) -
+          (aZone ? effectiveCharacterPower(aZone) : 0) ||
+        a.instanceId.localeCompare(b.instanceId)
+      );
+    });
+  return koTargets[0] ?? targets[0];
+}
+
 export function totalCardsInSide(state: BattleState, owner: BattlePlayer): number {
   const side = sideOf(state, owner);
   return (
@@ -118,6 +171,7 @@ export function totalCardsInSide(state: BattleState, owner: BattlePlayer): numbe
     side.hand.length +
     side.lifeCards.length +
     side.board.length +
+    (side.stage ? 1 : 0) +
     side.trash.length
   );
 }

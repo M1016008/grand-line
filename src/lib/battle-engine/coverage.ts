@@ -17,6 +17,8 @@ export interface DeckEffectCoverage {
   unsupportedCards: number;
   supportedRatio: number;
   complete: boolean;
+  leaderStatus: EffectCoverageStatus;
+  leaderReasons: string[];
   entries: DeckCoverageEntry[];
 }
 
@@ -41,6 +43,7 @@ export function calculateDeckCoverage(
   const supportedCards = count("supported");
   const partialCards = count("partial");
   const unsupportedCards = count("unsupported");
+  const leaderDefinition = registry.get(deck.leader.id);
   return {
     totalCards: deck.totalCards,
     supportedCards,
@@ -48,7 +51,12 @@ export function calculateDeckCoverage(
     unsupportedCards,
     supportedRatio:
       deck.totalCards > 0 ? supportedCards / deck.totalCards : 0,
-    complete: partialCards === 0 && unsupportedCards === 0,
+    complete:
+      partialCards === 0 &&
+      unsupportedCards === 0 &&
+      leaderDefinition.status === "supported",
+    leaderStatus: leaderDefinition.status,
+    leaderReasons: leaderDefinition.unsupportedReasons,
     entries,
   };
 }

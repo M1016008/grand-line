@@ -28,15 +28,14 @@ export function drawCards(
   };
 }
 
-export function searchDeck(
+export function searchChoices(
   state: BattleState,
   owner: "player" | "opponent",
   action: Extract<EffectAction, { type: "search" }>,
-): AppliedAction {
+): Array<{ card: CardListItem; lookedIndex: number }> {
   const side = sideOf(state, owner);
   const looked = side.deck.slice(0, action.lookAt);
-  const rest = side.deck.slice(action.lookAt);
-  const matches = looked.flatMap((card, index) => {
+  return looked.flatMap((card, index) => {
     if (action.cardType && card.cardType !== action.cardType) return [];
     if (action.feature && !card.features.includes(action.feature)) return [];
     if (action.color && !card.colors.includes(action.color)) return [];
@@ -46,10 +45,31 @@ export function searchDeck(
       return [];
     }
     if (action.excludeName && card.name === action.excludeName) return [];
-    return [{ card, index }];
+    return [{ card, lookedIndex: index }];
   });
-  const chosen = matches.slice(0, action.count);
-  const chosenIndexes = new Set(chosen.map((entry) => entry.index));
+}
+
+export function resolveSearchDeck(
+  state: BattleState,
+  owner: "player" | "opponent",
+  action: Extract<EffectAction, { type: "search" }>,
+  selectedLookedIndexes: number[],
+): AppliedAction {
+  const side = sideOf(state, owner);
+  const looked = side.deck.slice(0, action.lookAt);
+  const rest = side.deck.slice(action.lookAt);
+  const legal = new Set(searchChoices(state, owner, action).map((entry) => entry.lookedIndex));
+  const chosenIndexes = new Set(selectedLookedIndexes);
+  if (
+    chosenIndexes.size > action.count ||
+    [...chosenIndexes].some((index) => !legal.has(index)) ||
+    (!action.optional && chosenIndexes.size !== Math.min(action.count, legal.size))
+  ) {
+    return { state, log: ["→ 不正なSearch選択を拒否"] };
+  }
+  const chosen = looked.flatMap((card, index) =>
+    chosenIndexes.has(index) ? [{ card, lookedIndex: index }] : [],
+  );
   const remainingLooked = looked.filter((_, index) => !chosenIndexes.has(index));
   const nextSide = {
     ...side,
@@ -61,7 +81,7 @@ export function searchDeck(
     log: [
       chosen.length > 0
         ? `→ 上から${action.lookAt}枚を確認し、${chosen.map((entry) => entry.card.name).join("、")}を手札へ`
-        : `→ 上から${action.lookAt}枚を確認（該当なし）`,
+        : `→ 上から${action.lookAt}枚を確認（手札に加えない）`,
     ],
   };
 }

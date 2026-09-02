@@ -19,11 +19,12 @@ export interface TargetSpec {
   feature?: string;
   color?: string;
   count: number;
+  optional?: boolean;
 }
 
 export type EffectAction =
   | { type: "draw"; count: number }
-  | { type: "search"; lookAt: number; count: number; cardType?: string; feature?: string; color?: string; nameIncludes?: string; minCost?: number; maxCost?: number; excludeName?: string }
+  | { type: "search"; lookAt: number; count: number; optional: boolean; remainderDestination: "bottom"; cardType?: string; feature?: string; color?: string; nameIncludes?: string; minCost?: number; maxCost?: number; excludeName?: string }
   | { type: "ko"; target: TargetSpec }
   | { type: "return_to_hand"; target: TargetSpec }
   | { type: "return_to_deck"; target: TargetSpec; position: "top" | "bottom" }

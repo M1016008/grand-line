@@ -8,13 +8,17 @@ import { BattleEffectRegistry } from "./effect-registry";
 import {
   acceptAttack,
   attachDon,
+  chooseAttackTarget,
+  chooseBlocker,
   chooseEffectTarget,
   createBattleState,
   declareCharacterAttack,
   declareLeaderAttack,
   endPlayerTurn,
   playCard,
+  resolveSearchChoice,
   resolveTriggerChoice,
+  skipEffectTarget,
   useCounterCard,
 } from "./engine";
 import {
@@ -101,7 +105,9 @@ test("basic Search checks the top cards and moves only a matching card to hand",
   state.player.hand = [GOLDEN_SEARCH];
   state.player.deck = [FILLER, SEARCH_HIT, HIGH_TARGET, FILLER, LOW_TARGET, FILLER];
   const before = totalCardsInSide(state, "player");
-  const next = playCard(state, "player", 0, REGISTRY);
+  const pending = playCard(state, "player", 0, REGISTRY);
+  assert.equal(pending.pending?.type, "search");
+  const next = resolveSearchChoice(pending, 1, REGISTRY);
   assert.equal(next.player.hand.some((item) => item.id === SEARCH_HIT.id), true);
   assert.equal(next.player.deck.at(-1)?.id, LOW_TARGET.id);
   assert.equal(totalCardsInSide(next, "player"), before);
@@ -112,7 +118,8 @@ test("Search removes one matching copy rather than every duplicate card id", () 
   state.player.hand = [GOLDEN_SEARCH];
   state.player.deck = [SEARCH_HIT, SEARCH_HIT, FILLER];
   const before = totalCardsInSide(state, "player");
-  const next = playCard(state, "player", 0, REGISTRY);
+  const pending = playCard(state, "player", 0, REGISTRY);
+  const next = resolveSearchChoice(pending, 0, REGISTRY);
   assert.equal(next.player.hand.filter((item) => item.id === SEARCH_HIT.id).length, 1);
   assert.equal(next.player.deck.filter((item) => item.id === SEARCH_HIT.id).length, 1);
   assert.equal(totalCardsInSide(next, "player"), before);
@@ -137,7 +144,8 @@ test("Search applies the printed color filter", () => {
   const state = battleState();
   state.player.hand = [colorSearch];
   state.player.deck = [redWano, greenWano];
-  const next = playCard(state, "player", 0, registry);
+  const pending = playCard(state, "player", 0, registry);
+  const next = resolveSearchChoice(pending, 1, registry);
   assert.equal(next.player.hand.at(-1)?.id, greenWano.id);
   assert.equal(next.player.deck.some((item) => item.id === redWano.id), true);
 });
@@ -155,7 +163,8 @@ test("EVENT without a structured main effect stays in hand and spends no DON", (
 test("Rush attacks on its play turn and non-Rush cannot", () => {
   const rushState = battleState();
   rushState.player.board = [zone(GOLDEN_RUSH, "rush", 2)];
-  const rushed = declareCharacterAttack(rushState, "player", "rush", REGISTRY, "level1");
+  const rushTarget = declareCharacterAttack(rushState, "player", "rush", REGISTRY, "level1");
+  const rushed = chooseAttackTarget(rushTarget, "opponent:leader", REGISTRY);
   assert.equal(rushed.player.board[0]?.rested, true);
 
   const normalState = battleState();
@@ -168,7 +177,8 @@ test("Rush attacks on its play turn and non-Rush cannot", () => {
 test("Blocker intercepts and is KO'd to trash when attack power wins", () => {
   const state = battleState();
   state.opponent.board = [zone(GOLDEN_BLOCKER, "blocker")];
-  const next = declareLeaderAttack(state, "player", REGISTRY, "level3");
+  const target = declareLeaderAttack(state, "player", REGISTRY, "level3");
+  const next = chooseAttackTarget(target, "opponent:leader", REGISTRY);
   assert.equal(next.opponent.board.length, 0);
   assert.equal(next.opponent.trash.at(-1)?.id, GOLDEN_BLOCKER.id);
   assert.equal(next.opponent.lifeCards.length, 1);
@@ -194,7 +204,8 @@ test("supported Trigger resolves, draws, and sends the event to trash", () => {
   state.opponent.lifeCards = [GOLDEN_TRIGGER_DRAW];
   state.opponent.deck = [FILLER];
   const before = totalCardsInSide(state, "opponent");
-  const next = declareLeaderAttack(state, "player", REGISTRY, "level1");
+  const target = declareLeaderAttack(state, "player", REGISTRY, "level1");
+  const next = chooseAttackTarget(target, "opponent:leader", REGISTRY);
   assert.equal(next.opponent.lifeCards.length, 0);
   assert.equal(next.opponent.trash.at(-1)?.id, GOLDEN_TRIGGER_DRAW.id);
   assert.equal(next.opponent.hand.at(-1)?.id, FILLER.id);
@@ -239,7 +250,8 @@ test("play-self Trigger fails closed to hand when board already has five cards",
 test("life never becomes negative and an attack into zero life ends the game", () => {
   const state = battleState();
   state.opponent.lifeCards = [];
-  const next = declareLeaderAttack(state, "player", REGISTRY, "level1");
+  const target = declareLeaderAttack(state, "player", REGISTRY, "level1");
+  const next = chooseAttackTarget(target, "opponent:leader", REGISTRY);
   assert.equal(next.opponent.lifeCards.length, 0);
   assert.equal(next.winner, "player");
 });
@@ -248,7 +260,8 @@ test("OnAttack target choice applies deterministic structured modifier", () => {
   const state = battleState();
   state.player.board = [zone(GOLDEN_ON_ATTACK, "attacker", 1)];
   state.opponent.board = [zone(HIGH_TARGET, "debuff")];
-  const pending = declareCharacterAttack(state, "player", "attacker", REGISTRY, "level1");
+  const attackTarget = declareCharacterAttack(state, "player", "attacker", REGISTRY, "level1");
+  const pending = chooseAttackTarget(attackTarget, "opponent:leader", REGISTRY);
   assert.equal(pending.pending?.type, "effect_target");
   const next = chooseEffectTarget(pending, "debuff", REGISTRY);
   assert.equal(next.opponent.board[0]?.powerModifier, -2_000);
@@ -327,6 +340,208 @@ test("same seed and decks produce identical state and coverage counts copies", (
   assert.equal(coverage.supportedCards, 46);
   assert.equal(coverage.partialCards, 4);
   assert.equal(coverage.complete, false);
+  assert.equal(coverage.leaderStatus, "unsupported");
+});
+
+test("normal attack target choice includes Leader and rested Characters only, then KO moves to trash", () => {
+  const state = battleState();
+  state.opponent.board = [
+    { ...zone(FILLER, "rested-target"), rested: true },
+    zone(HIGH_TARGET, "active-target"),
+  ];
+  const pending = declareLeaderAttack(state, "player", REGISTRY, "level1");
+  assert.equal(pending.pending?.type, "attack_target");
+  if (pending.pending?.type !== "attack_target") return;
+  assert.deepEqual(
+    pending.pending.legalTargets.map((target) => target.instanceId),
+    ["opponent:leader", "rested-target"],
+  );
+  assert.equal(chooseAttackTarget(pending, "active-target", REGISTRY), pending);
+  const resolved = chooseAttackTarget(pending, "rested-target", REGISTRY);
+  assert.equal(resolved.opponent.board.some((item) => item.instanceId === "rested-target"), false);
+  assert.equal(resolved.opponent.trash.at(-1)?.id, FILLER.id);
+});
+
+test("CPU Character attack queue resumes after pending defense", () => {
+  const state = battleState();
+  state.opponent.deck = [FILLER];
+  state.player.deck = [FILLER];
+  state.player.lifeCards = [FILLER, FILLER, FILLER];
+  state.opponent.board = [zone(HIGH_TARGET, "cpu-attacker", 1)];
+  const leaderDefense = endPlayerTurn(state, REGISTRY, "level1");
+  assert.equal(leaderDefense.pending?.type, "defense");
+  const characterDefense = acceptAttack(leaderDefense, REGISTRY);
+  assert.equal(characterDefense.pending?.type, "defense");
+  assert.equal(
+    characterDefense.pending?.type === "defense"
+      ? characterDefense.pending.attackerName
+      : undefined,
+    HIGH_TARGET.name,
+  );
+  assert.equal(characterDefense.opponent.board[0]?.rested, true);
+  const completed = acceptAttack(characterDefense, REGISTRY);
+  assert.equal(completed.activePlayer, "player");
+  assert.equal(completed.turn, 3);
+});
+
+test("CPU skips summoning-sick Characters, while Rush can attack on play turn", () => {
+  for (const [candidate, expectedAttack] of [
+    [zone(HIGH_TARGET, "sick", 2), false],
+    [zone(GOLDEN_RUSH, "rush", 2), true],
+  ] as const) {
+    const state = battleState();
+    state.opponent.deck = [FILLER];
+    state.player.deck = [FILLER];
+    state.player.lifeCards = [FILLER, FILLER, FILLER];
+    state.opponent.board = [candidate];
+    const first = endPlayerTurn(state, REGISTRY, "level1");
+    const afterLeader = acceptAttack(first, REGISTRY);
+    assert.equal(afterLeader.pending?.type === "defense", expectedAttack);
+    if (expectedAttack) {
+      assert.equal(afterLeader.opponent.board[0]?.rested, true);
+    } else {
+      assert.equal(afterLeader.activePlayer, "player");
+    }
+  }
+});
+
+test("a rested CPU Character cannot declare an attack", () => {
+  const state = battleState();
+  state.activePlayer = "opponent";
+  state.opponent.board = [{ ...zone(HIGH_TARGET, "rested-cpu", 1), rested: true }];
+  const next = declareCharacterAttack(state, "opponent", "rested-cpu", REGISTRY, "level1");
+  assert.equal(next, state);
+});
+
+test("Leader OnAttack resolves through the attack pipeline and coverage reports Leader separately", () => {
+  const leader = card({
+    id: "TEST-L001",
+    name: "アタック時リーダー",
+    cardType: "LEADER",
+    cost: null,
+    life: 5,
+    power: 5_000,
+    mechanics: ["OnAttack"],
+    effectText: "[アタック時]相手のコスト2以下のキャラ1枚までを、KOする。",
+  });
+  const registry = new BattleEffectRegistry([leader, FILLER, LOW_TARGET]);
+  const state = battleState();
+  state.player.leader = leader;
+  state.opponent.board = [zone(LOW_TARGET, "leader-effect-target")];
+  const selectedAttack = chooseAttackTarget(
+    declareLeaderAttack(state, "player", registry, "level1"),
+    "opponent:leader",
+    registry,
+  );
+  assert.equal(selectedAttack.pending?.type, "effect_target");
+  const resolved = chooseEffectTarget(selectedAttack, "leader-effect-target", registry);
+  assert.equal(resolved.opponent.board.length, 0);
+  const coverage = calculateDeckCoverage(
+    { ...practiceDeck([{ card: FILLER, count: 50 }]), leader },
+    registry,
+  );
+  assert.equal(coverage.leaderStatus, "supported");
+});
+
+test("Character-only KO and bounce targets never include the Stage area", () => {
+  for (const effectCard of [GOLDEN_KO, GOLDEN_BOUNCE]) {
+    const stage = card({ id: `STAGE-${effectCard.id}`, name: "対象外ステージ", cardType: "STAGE" });
+    const state = battleState();
+    state.player.hand = [effectCard];
+    state.opponent.stage = zone(stage, "stage-zone");
+    state.opponent.board = [zone(LOW_TARGET, "character-zone")];
+    const pending = playCard(state, "player", 0, REGISTRY);
+    assert.equal(pending.pending?.type, "effect_target");
+    if (pending.pending?.type !== "effect_target") continue;
+    assert.equal(
+      pending.pending.legalTargets.some((target) => target.instanceId === "stage-zone"),
+      false,
+    );
+    assert.equal(
+      pending.pending.legalTargets.every((target) => target.zone === "character"),
+      true,
+    );
+  }
+});
+
+test("Character field max5 is independent from the one-card Stage area and Stage replacement trashes the old Stage", () => {
+  const oldStage = card({ id: "TEST-STAGE-OLD", name: "旧ステージ", cardType: "STAGE", cost: 0 });
+  const newStage = card({ id: "TEST-STAGE-NEW", name: "新ステージ", cardType: "STAGE", cost: 0 });
+  const registry = new BattleEffectRegistry([oldStage, newStage]);
+  const state = battleState();
+  state.player.board = Array.from({ length: 5 }, (_, index) => zone(FILLER, `char-${index}`));
+  state.player.stage = zone(oldStage, "old-stage");
+  state.player.hand = [newStage];
+  const next = playCard(state, "player", 0, registry);
+  assert.equal(next.player.board.length, 5);
+  assert.equal(next.player.stage?.card.id, newStage.id);
+  assert.equal(next.player.trash.at(-1)?.id, oldStage.id);
+});
+
+test("optional target can be declined without changing the target zone", () => {
+  const state = battleState();
+  state.player.hand = [GOLDEN_KO];
+  state.opponent.board = [zone(LOW_TARGET, "optional-target")];
+  const pending = playCard(state, "player", 0, REGISTRY);
+  const next = skipEffectTarget(pending, REGISTRY);
+  assert.equal(next.opponent.board[0]?.instanceId, "optional-target");
+  assert.equal(next.opponent.trash.length, 0);
+});
+
+test("Search lets Player choose among matches or choose zero, moves unmatched cards to bottom, and conserves duplicates", () => {
+  const alternateHit = { ...SEARCH_HIT, id: "TEST-SEARCH-ALT", name: "ロロノア・ゾロ" };
+  const registry = new BattleEffectRegistry([...GOLDEN_CARDS, SEARCH_HIT, alternateHit, FILLER]);
+  const state = battleState();
+  state.player.hand = [GOLDEN_SEARCH];
+  state.player.deck = [SEARCH_HIT, FILLER, alternateHit, SEARCH_HIT];
+  const before = totalCardsInSide(state, "player");
+  const pending = playCard(state, "player", 0, registry);
+  assert.equal(pending.pending?.type, "search");
+  const chosen = resolveSearchChoice(pending, 2, registry);
+  assert.equal(chosen.player.hand.at(-1)?.id, alternateHit.id);
+  assert.deepEqual(chosen.player.deck.map((cardValue) => cardValue.id), [SEARCH_HIT.id, FILLER.id, SEARCH_HIT.id]);
+  assert.equal(totalCardsInSide(chosen, "player"), before);
+
+  const zeroState = battleState();
+  zeroState.player.hand = [GOLDEN_SEARCH];
+  zeroState.player.deck = [SEARCH_HIT, FILLER, SEARCH_HIT];
+  const zeroPending = playCard(zeroState, "player", 0, registry);
+  const zero = resolveSearchChoice(zeroPending, null, registry);
+  assert.equal(zero.player.hand.length, 0);
+  assert.deepEqual(zero.player.deck.map((cardValue) => cardValue.id), [SEARCH_HIT.id, FILLER.id, SEARCH_HIT.id]);
+});
+
+test("queued OnAttack continuation preserves Level1 and Level5 CPU defense behavior", () => {
+  for (const [skill, expectCounter] of [["level1", false], ["level5", true]] as const) {
+    const state = battleState();
+    state.player.board = [zone(GOLDEN_ON_ATTACK, `attacker-${skill}`, 1)];
+    state.opponent.board = [zone(LOW_TARGET, `effect-target-${skill}`)];
+    state.opponent.hand = [GOLDEN_REST];
+    state.opponent.lifeCards = [FILLER];
+    const targetChoice = declareCharacterAttack(
+      state,
+      "player",
+      `attacker-${skill}`,
+      REGISTRY,
+      skill,
+    );
+    const effectChoice = chooseAttackTarget(targetChoice, "opponent:leader", REGISTRY);
+    const resolved = chooseEffectTarget(effectChoice, `effect-target-${skill}`, REGISTRY);
+    assert.equal(resolved.opponent.hand.length === 0, expectCounter);
+    assert.equal(resolved.opponent.lifeCards.length, expectCounter ? 1 : 0);
+  }
+});
+
+test("Blocker selection is final and cannot rest a second Blocker", () => {
+  const state = battleState();
+  state.activePlayer = "opponent";
+  state.player.board = [zone(GOLDEN_BLOCKER, "blocker-a"), zone(GOLDEN_BLOCKER, "blocker-b")];
+  const defense = declareLeaderAttack(state, "opponent", REGISTRY, "level1");
+  const first = chooseBlocker(defense, "blocker-a");
+  const second = chooseBlocker(first, "blocker-b");
+  assert.equal(second.player.board.find((item) => item.instanceId === "blocker-a")?.rested, true);
+  assert.equal(second.player.board.find((item) => item.instanceId === "blocker-b")?.rested, false);
+  assert.equal(second.pending?.type === "defense" ? second.pending.selectedBlocker?.instanceId : undefined, "blocker-a");
 });
 
 function battleState(): BattleState {

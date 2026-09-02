@@ -12,6 +12,7 @@ import { BattleEffectRegistry } from "@/lib/battle-engine/effect-registry";
 import {
   acceptAttack,
   attachDon,
+  chooseAttackTarget,
   chooseBlocker,
   chooseEffectTarget,
   createBattleState,
@@ -19,7 +20,9 @@ import {
   declareLeaderAttack,
   endPlayerTurn,
   playCard,
+  resolveSearchChoice,
   resolveTriggerChoice,
+  skipEffectTarget,
   useCounterCard,
 } from "@/lib/battle-engine/engine";
 import {
@@ -401,6 +404,78 @@ function PendingDecision({
                   {target.label}
                 </Button>
               ))}
+              {pending.action.target.optional ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() =>
+                    onChange((current) =>
+                      current ? skipEffectTarget(current, registry) : current,
+                    )
+                  }
+                >
+                  選ばない
+                </Button>
+              ) : null}
+            </div>
+          </>
+        ) : null}
+        {pending.type === "attack_target" ? (
+          <>
+            <p className="text-sm">アタック対象を選択</p>
+            <div className="grid gap-2">
+              {pending.legalTargets.map((target) => (
+                <Button
+                  key={target.instanceId}
+                  type="button"
+                  variant="secondary"
+                  onClick={() =>
+                    onChange((current) =>
+                      current
+                        ? chooseAttackTarget(current, target.instanceId, registry)
+                        : current,
+                    )
+                  }
+                >
+                  {target.label}
+                </Button>
+              ))}
+            </div>
+          </>
+        ) : null}
+        {pending.type === "search" ? (
+          <>
+            <p className="text-sm">{pending.sourceName}：手札に加えるカードを選択</p>
+            <div className="grid gap-2">
+              {pending.legalChoices.map((choice) => (
+                <Button
+                  key={`${choice.lookedIndex}:${choice.card.id}`}
+                  type="button"
+                  variant="secondary"
+                  onClick={() =>
+                    onChange((current) =>
+                      current
+                        ? resolveSearchChoice(current, choice.lookedIndex, registry)
+                        : current,
+                    )
+                  }
+                >
+                  {choice.card.id} {choice.card.name}
+                </Button>
+              ))}
+              {pending.action.optional ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() =>
+                    onChange((current) =>
+                      current ? resolveSearchChoice(current, null, registry) : current,
+                    )
+                  }
+                >
+                  加えない
+                </Button>
+              ) : null}
             </div>
           </>
         ) : null}
@@ -511,6 +586,9 @@ function CoveragePanel({ title, coverage }: { title: string; coverage: DeckEffec
           <span className="text-amber-300">partial {coverage.partialCards}</span>
           <span className="text-red-300">unsupported {coverage.unsupportedCards}</span>
         </div>
+        <div className="text-xs">
+          Leader: <span className={coverage.leaderStatus === "supported" ? "text-emerald-300" : "text-amber-300"}>{coverage.leaderStatus}</span>
+        </div>
         {problemEntries.length > 0 ? (
           <details className="text-muted-foreground text-xs">
             <summary className="cursor-pointer">未完全再現カードを表示</summary>
@@ -617,6 +695,12 @@ function SideBoard({
             );
           })}
         </div>
+        {side?.stage ? (
+          <div className="border-border/40 bg-background/25 flex items-center gap-2 rounded-md border px-2 py-1 text-xs">
+            <span className="text-muted-foreground">STAGE</span>
+            <span className="truncate">{side.stage.card.id} {side.stage.card.name}</span>
+          </div>
+        ) : null}
         {isOpponent ? <div className="text-muted-foreground text-center text-xs">Hand {side?.hand.length ?? 5}</div> : null}
       </div>
       <div className="grid gap-2">

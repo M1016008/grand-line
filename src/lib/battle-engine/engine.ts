@@ -1,15 +1,17 @@
 import type { CardListItem } from "@/lib/cards";
 import { cpuSkillRank, type CpuSkill } from "@/lib/practice-log";
 import type { PracticeDeck } from "@/lib/practice-sim";
-import { applyTargetedAction, drawCards, searchDeck } from "./actions";
+import { applyTargetedAction, drawCards, resolveSearchDeck, searchChoices } from "./actions";
 import { BattleEffectRegistry } from "./effect-registry";
 import { isTargetedAction, type EffectAction, type EffectTrigger } from "./effects";
 import {
   blockerTargets,
+  chooseCpuAttackTarget,
   chooseDeterministicTarget,
   effectiveCharacterPower,
   effectiveLeaderPower,
   legalTargets,
+  legalAttackTargets,
 } from "./selectors";
 import {
   DEFAULT_BATTLE_CONFIG,
@@ -67,11 +69,8 @@ export function playCard(
   if (cost > availableDon(side)) {
     return appendBattleLog(state, `${card.name} はDON!!が足りません。`);
   }
-  if (
-    (card.cardType === "CHARACTER" || card.cardType === "STAGE") &&
-    side.board.length >= DEFAULT_BATTLE_CONFIG.boardLimit
-  ) {
-    return appendBattleLog(state, "キャラ/ステージエリアがいっぱいです。");
+  if (card.cardType === "CHARACTER" && side.board.length >= DEFAULT_BATTLE_CONFIG.boardLimit) {
+    return appendBattleLog(state, "キャラクターエリアがいっぱいです。");
   }
 
   const nextSide: BattleSide = {
@@ -81,7 +80,7 @@ export function playCard(
   };
   let next = withSide(state, actor, nextSide);
   if (card.cardType === "CHARACTER" || card.cardType === "STAGE") {
-    const placed = addToBoard(next, actor, card, false);
+    const placed = addToField(next, actor, card, false);
     next = placed.state;
     next = appendBattleLog(
       next,
@@ -123,7 +122,61 @@ export function chooseEffectTarget(
     pending.remainingActions,
     registry,
   );
-  return continueQueuedAttack(next, registry);
+  return continueBattleFlow(next, registry);
+}
+
+export function skipEffectTarget(
+  state: BattleState,
+  registry: BattleEffectRegistry,
+): BattleState {
+  if (state.pending?.type !== "effect_target" || !state.pending.action.target.optional) {
+    return state;
+  }
+  const pending = state.pending;
+  let next = appendBattleLog({ ...state, pending: undefined }, "→ 対象を選ばない");
+  next = resolveActions(
+    next,
+    pending.actor,
+    pending.sourceCardId,
+    pending.sourceName,
+    pending.trigger,
+    pending.remainingActions,
+    registry,
+  );
+  return continueBattleFlow(next, registry);
+}
+
+export function resolveSearchChoice(
+  state: BattleState,
+  lookedIndex: number | null,
+  registry: BattleEffectRegistry,
+): BattleState {
+  if (state.pending?.type !== "search") return state;
+  const pending = state.pending;
+  if (lookedIndex === null && !pending.action.optional) return state;
+  if (
+    lookedIndex !== null &&
+    !pending.legalChoices.some((entry) => entry.lookedIndex === lookedIndex)
+  ) {
+    return state;
+  }
+  const applied = resolveSearchDeck(
+    { ...state, pending: undefined },
+    pending.actor,
+    pending.action,
+    lookedIndex === null ? [] : [lookedIndex],
+  );
+  let next = appendBattleLog(applied.state, ...applied.log);
+  next = resolveActions(
+    next,
+    pending.actor,
+    pending.sourceCardId,
+    pending.sourceName,
+    pending.trigger,
+    pending.remainingActions,
+    registry,
+  );
+  return continueBattleFlow(next, registry);
 }
 
 export function attachDon(
@@ -171,16 +224,26 @@ export function declareLeaderAttack(
   }
   const side = sideOf(state, actor);
   if (side.leaderRested) return state;
-  const rested = withSide(state, actor, { ...side, leaderRested: true });
-  const defender = otherPlayer(actor);
-  const attack: AttackContext = {
-    attacker: actor,
-    defender,
-    attackerName: side.leader.name,
-    attackPower: effectiveLeaderPower(rested, actor),
-    target: leaderTarget(rested, defender),
-  };
-  return continueAttack(appendBattleLog(rested, `${side.leader.name} でリーダーへ攻撃`), attack, registry, cpuSkill);
+  const targets = legalAttackTargets(state, actor);
+  if (actor === "player") {
+    return {
+      ...state,
+      pending: {
+        type: "attack_target",
+        attacker: actor,
+        attackerKind: "leader",
+        attackerInstanceId: `${actor}:leader`,
+        legalTargets: targets,
+        cpuSkill,
+      },
+    };
+  }
+  const target = chooseCpuAttackTarget(
+    state,
+    actor,
+    effectiveLeaderPower(state, actor),
+  );
+  return commitLeaderAttack(state, actor, target, registry, cpuSkill);
 }
 
 export function declareCharacterAttack(
@@ -199,6 +262,84 @@ export function declareCharacterAttack(
   if (zone.playedTurn >= state.turn && !registry.isRush(zone.card.id)) {
     return appendBattleLog(state, `${zone.card.name} は登場ターン中のため攻撃できません。`);
   }
+  const targets = legalAttackTargets(state, actor);
+  if (actor === "player") {
+    return {
+      ...state,
+      pending: {
+        type: "attack_target",
+        attacker: actor,
+        attackerKind: "character",
+        attackerInstanceId: instanceId,
+        legalTargets: targets,
+        cpuSkill,
+      },
+    };
+  }
+  const target = chooseCpuAttackTarget(state, actor, effectiveCharacterPower(zone));
+  return commitCharacterAttack(state, actor, instanceId, target, registry, cpuSkill);
+}
+
+export function chooseAttackTarget(
+  state: BattleState,
+  targetInstanceId: string,
+  registry: BattleEffectRegistry,
+): BattleState {
+  if (state.pending?.type !== "attack_target") return state;
+  const pending = state.pending;
+  const target = pending.legalTargets.find(
+    (candidate) => candidate.instanceId === targetInstanceId,
+  );
+  if (!target) return state;
+  const cleared = { ...state, pending: undefined };
+  return pending.attackerKind === "leader"
+    ? commitLeaderAttack(cleared, pending.attacker, target, registry, pending.cpuSkill)
+    : commitCharacterAttack(
+        cleared,
+        pending.attacker,
+        pending.attackerInstanceId,
+        target,
+        registry,
+        pending.cpuSkill,
+      );
+}
+
+function commitLeaderAttack(
+  state: BattleState,
+  actor: BattlePlayer,
+  target: BattleTargetRef,
+  registry: BattleEffectRegistry,
+  cpuSkill: CpuSkill,
+): BattleState {
+  const side = sideOf(state, actor);
+  if (side.leaderRested) return state;
+  const rested = withSide(state, actor, { ...side, leaderRested: true });
+  const attack: AttackContext = {
+    attacker: actor,
+    defender: otherPlayer(actor),
+    attackerName: side.leader.name,
+    attackPower: effectiveLeaderPower(rested, actor),
+    target,
+    cpuSkill,
+  };
+  let prepared = appendBattleLog(rested, `${side.leader.name} で${target.label}へ攻撃`);
+  prepared = { ...prepared, queuedAttack: attack };
+  prepared = resolveCardTrigger(prepared, actor, side.leader, "on_attack", registry);
+  return continueBattleFlow(prepared, registry);
+}
+
+function commitCharacterAttack(
+  state: BattleState,
+  actor: BattlePlayer,
+  instanceId: string,
+  target: BattleTargetRef,
+  registry: BattleEffectRegistry,
+  cpuSkill: CpuSkill,
+): BattleState {
+  const side = sideOf(state, actor);
+  const zone = side.board.find((item) => item.instanceId === instanceId);
+  if (!zone || zone.rested) return state;
+  if (zone.playedTurn >= state.turn && !registry.isRush(zone.card.id)) return state;
   const next = withSide(state, actor, {
     ...side,
     board: side.board.map((item) =>
@@ -210,16 +351,17 @@ export function declareCharacterAttack(
     defender: otherPlayer(actor),
     attackerName: zone.card.name,
     attackPower: effectiveCharacterPower(zone),
-    target: leaderTarget(next, otherPlayer(actor)),
+    target,
+    cpuSkill,
   };
-  let prepared = appendBattleLog(next, `${zone.card.id} ${zone.card.name} でリーダーへ攻撃`);
+  let prepared = appendBattleLog(next, `${zone.card.id} ${zone.card.name} で${target.label}へ攻撃`);
   prepared = { ...prepared, queuedAttack: attack };
   prepared = resolveCardTrigger(prepared, actor, zone.card, "on_attack", registry);
-  return continueQueuedAttack(prepared, registry, cpuSkill);
+  return continueBattleFlow(prepared, registry);
 }
 
 export function chooseBlocker(state: BattleState, instanceId: string): BattleState {
-  if (state.pending?.type !== "defense") return state;
+  if (state.pending?.type !== "defense" || state.pending.selectedBlocker) return state;
   const blocker = state.pending.blockerOptions.find((item) => item.instanceId === instanceId);
   if (!blocker) return state;
   const side = sideOf(state, blocker.owner);
@@ -267,7 +409,7 @@ export function acceptAttack(
   const pending = state.pending;
   let next: BattleState = { ...state, pending: undefined };
   next = resolveAttackHit(next, pending, registry);
-  return completeCpuTurnIfReady(next);
+  return continueBattleFlow(next, registry);
 }
 
 export function resolveTriggerChoice(
@@ -288,7 +430,7 @@ export function resolveTriggerChoice(
   } else {
     next = activateRevealedTrigger(next, pending.defender, pending.revealedCard, pending.effect, registry);
   }
-  return completeCpuTurnIfReady(next);
+  return continueBattleFlow(next, registry);
 }
 
 export function endPlayerTurn(
@@ -301,9 +443,15 @@ export function endPlayerTurn(
   if (next.winner) return next;
   next = runCpuMain(next, registry, cpuSkill);
   if (next.winner || next.pending) return next;
-  next = declareLeaderAttack(next, "opponent", registry, cpuSkill);
-  if (next.pending) return { ...next, resumePlayerTurn: true };
-  return beginTurn({ ...next, turn: next.turn + 1 }, "player", false);
+  const attacks = [
+    { kind: "leader" as const, instanceId: "opponent:leader" as const },
+    ...next.opponent.board.map((zone) => ({
+      kind: "character" as const,
+      instanceId: zone.instanceId,
+    })),
+  ];
+  next = { ...next, cpuAttackQueue: { cpuSkill, attacks } };
+  return continueBattleFlow(next, registry);
 }
 
 function runCpuMain(
@@ -321,7 +469,7 @@ function runCpuMain(
       .filter(({ card }) =>
         card.cardType === "EVENT"
           ? registry.get(card.id).effects.some((effect) => effect.trigger === "main")
-          : side.board.length < DEFAULT_BATTLE_CONFIG.boardLimit,
+          : card.cardType === "STAGE" || side.board.length < DEFAULT_BATTLE_CONFIG.boardLimit,
       )
       .sort((a, b) =>
         (b.card.cost ?? 0) - (a.card.cost ?? 0) || a.card.id.localeCompare(b.card.id),
@@ -337,11 +485,49 @@ function runCpuMain(
 function continueQueuedAttack(
   state: BattleState,
   registry: BattleEffectRegistry,
-  cpuSkill: CpuSkill = "level3",
 ): BattleState {
   if (state.pending || !state.queuedAttack) return state;
   const attack = state.queuedAttack;
-  return continueAttack({ ...state, queuedAttack: undefined }, attack, registry, cpuSkill);
+  return continueAttack(
+    { ...state, queuedAttack: undefined },
+    attack,
+    registry,
+    attack.cpuSkill,
+  );
+}
+
+function continueBattleFlow(
+  state: BattleState,
+  registry: BattleEffectRegistry,
+): BattleState {
+  if (state.pending || state.winner) return state;
+  if (state.queuedAttack) {
+    const next = continueQueuedAttack(state, registry);
+    if (next.pending || next.winner || next.queuedAttack) return next;
+    return continueBattleFlow(next, registry);
+  }
+  if (!state.cpuAttackQueue) return state;
+  const [entry, ...remaining] = state.cpuAttackQueue.attacks;
+  if (!entry) {
+    const { cpuAttackQueue: _queue, ...withoutQueue } = state;
+    void _queue;
+    return beginTurn({ ...withoutQueue, turn: state.turn + 1 }, "player", false);
+  }
+  let next: BattleState = {
+    ...state,
+    cpuAttackQueue: { ...state.cpuAttackQueue, attacks: remaining },
+  };
+  next = entry.kind === "leader"
+    ? declareLeaderAttack(next, "opponent", registry, state.cpuAttackQueue.cpuSkill)
+    : declareCharacterAttack(
+        next,
+        "opponent",
+        entry.instanceId,
+        registry,
+        state.cpuAttackQueue.cpuSkill,
+      );
+  if (next === state) return continueBattleFlow({ ...state, cpuAttackQueue: { ...state.cpuAttackQueue, attacks: remaining } }, registry);
+  return next.pending || next.winner ? next : continueBattleFlow(next, registry);
 }
 
 function continueAttack(
@@ -387,7 +573,8 @@ function resolveCpuDefense(
     next = appendBattleLog(next, `→ CPU: ${target.label} がブロック`);
   }
   const defenseBase = targetDefensePower(next, target);
-  const needed = Math.max(0, attack.attackPower - defenseBase);
+  // A tied battle is won by the attacker, so defense needs one 1000-point step above it.
+  const needed = Math.max(0, attack.attackPower - defenseBase + 1_000);
   if (needed > 0 && rank >= 2) {
     const countered = consumeCpuCounters(next, attack.defender, needed, rank);
     next = countered.state;
@@ -476,6 +663,7 @@ function activateRevealedTrigger(
   let next = state;
   if (
     playSelf &&
+    card.cardType === "CHARACTER" &&
     sideOf(next, defender).board.length >= DEFAULT_BATTLE_CONFIG.boardLimit
   ) {
     const side = sideOf(next, defender);
@@ -550,7 +738,9 @@ function resolveActions(
           },
         };
       }
-      const chosen = chooseDeterministicTarget(next, targets);
+      const chosen = action.target.optional && !shouldCpuUseOptionalTarget(actor, action, targets)
+        ? undefined
+        : chooseDeterministicTarget(next, preferOpponentTargets(actor, action, targets));
       if (chosen) {
         const applied = applyTargetedAction(next, action, chosen);
         next = appendBattleLog(applied.state, ...applied.log);
@@ -561,10 +751,31 @@ function resolveActions(
       const applied = drawCards(next, actor, action.count);
       next = appendBattleLog(applied.state, ...applied.log);
     } else if (action.type === "search") {
-      const applied = searchDeck(next, actor, action);
+      const choices = searchChoices(next, actor, action);
+      if (actor === "player" && (choices.length > 1 || action.optional)) {
+        return {
+          ...next,
+          pending: {
+            type: "search",
+            actor,
+            sourceCardId,
+            sourceName,
+            action,
+            remainingActions: actions.slice(index + 1),
+            trigger,
+            legalChoices: choices,
+          },
+        };
+      }
+      const applied = resolveSearchDeck(
+        next,
+        actor,
+        action,
+        choices[0] ? [choices[0].lookedIndex] : [],
+      );
       next = appendBattleLog(applied.state, ...applied.log);
     } else if (action.type === "play_self" && sourceCard) {
-      const placed = addToBoard(next, actor, sourceCard, action.rested ?? false);
+      const placed = addToField(next, actor, sourceCard, action.rested ?? false);
       next = appendBattleLog(placed.state, `→ ${sourceCard.name} をTriggerで登場`);
     } else if (action.type === "add_life") {
       next = addLife(next, actor, action.count);
@@ -576,15 +787,37 @@ function resolveActions(
   return next;
 }
 
-function addToBoard(
+function addToField(
   state: BattleState,
   actor: BattlePlayer,
   card: CardListItem,
   rested: boolean,
 ): { state: BattleState; zone?: BattleZoneCard } {
   const side = sideOf(state, actor);
+  if (card.cardType === "STAGE") {
+    const zone: BattleZoneCard = {
+      instanceId: `${actor}:${card.id}:${state.turn}:${state.sequence}`,
+      card,
+      rested,
+      playedTurn: state.turn,
+      attachedDon: 0,
+      powerModifier: 0,
+      costModifier: 0,
+    };
+    return {
+      zone,
+      state: {
+        ...withSide(state, actor, {
+          ...side,
+          stage: zone,
+          trash: side.stage ? [...side.trash, side.stage.card] : side.trash,
+        }),
+        sequence: state.sequence + 1,
+      },
+    };
+  }
   if (side.board.length >= DEFAULT_BATTLE_CONFIG.boardLimit) {
-    return { state: appendBattleLog(state, "→ board max5のため登場できません") };
+    return { state: appendBattleLog(state, "→ Character field max5のため登場できません") };
   }
   const zone: BattleZoneCard = {
     instanceId: `${actor}:${card.id}:${state.turn}:${state.sequence}`,
@@ -636,16 +869,17 @@ function clearOutgoingTurnState(
         costModifier: 0,
         attachedDon: owner === outgoing ? 0 : zone.attachedDon,
       })),
+      stage: side.stage
+        ? {
+            ...side.stage,
+            powerModifier: 0,
+            costModifier: 0,
+            attachedDon: 0,
+          }
+        : undefined,
     });
   }
   return next;
-}
-
-function completeCpuTurnIfReady(state: BattleState): BattleState {
-  if (state.pending || !state.resumePlayerTurn || state.winner) return state;
-  const { resumePlayerTurn: _ignored, ...base } = state;
-  void _ignored;
-  return beginTurn({ ...base, turn: base.turn + 1 }, "player", false);
 }
 
 function targetDefensePower(state: BattleState, target: BattleTargetRef): number {
@@ -730,6 +964,7 @@ function setupSide(deck: PracticeDeck, rng: () => number): BattleSide {
     hand,
     lifeCards,
     board: [],
+    stage: undefined,
     trash: [],
     donTotal: 0,
     donRested: 0,
@@ -754,6 +989,15 @@ function refreshSide(side: BattleSide): BattleSide {
       powerModifier: 0,
       costModifier: 0,
     })),
+    stage: side.stage
+      ? {
+          ...side.stage,
+          rested: false,
+          attachedDon: 0,
+          powerModifier: 0,
+          costModifier: 0,
+        }
+      : undefined,
   };
 }
 
@@ -770,15 +1014,33 @@ function availableDon(side: BattleSide): number {
   return Math.max(0, side.donTotal - side.donRested);
 }
 
-function leaderTarget(state: BattleState, owner: BattlePlayer): BattleTargetRef {
-  const leader = sideOf(state, owner).leader;
-  return {
-    owner,
-    zone: "leader",
-    instanceId: `${owner}:leader`,
-    cardId: leader.id,
-    label: `${leader.name} (リーダー)`,
-  };
+function preferOpponentTargets(
+  actor: BattlePlayer,
+  action: Extract<EffectAction, { target: unknown }>,
+  targets: BattleTargetRef[],
+): BattleTargetRef[] {
+  if (!["ko", "return_to_hand", "return_to_deck", "rest"].includes(action.type)) {
+    return targets;
+  }
+  const opponentTargets = targets.filter((target) => target.owner === otherPlayer(actor));
+  return opponentTargets.length > 0 ? opponentTargets : targets;
+}
+
+function shouldCpuUseOptionalTarget(
+  actor: BattlePlayer,
+  action: Extract<EffectAction, { target: unknown }>,
+  targets: BattleTargetRef[],
+): boolean {
+  if (targets.length === 0) return false;
+  if (["ko", "return_to_hand", "return_to_deck", "rest"].includes(action.type)) {
+    return targets.some((target) => target.owner === otherPlayer(actor));
+  }
+  if (action.type === "power_modifier" || action.type === "cost_modifier") {
+    return action.amount >= 0
+      ? targets.some((target) => target.owner === actor)
+      : targets.some((target) => target.owner === otherPlayer(actor));
+  }
+  return true;
 }
 
 function actorLabel(actor: BattlePlayer): string {

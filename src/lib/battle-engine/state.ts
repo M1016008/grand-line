@@ -1,4 +1,5 @@
 import type { CardListItem } from "@/lib/cards";
+import type { CpuSkill } from "@/lib/practice-log";
 import type { EffectAction, TriggeredEffect } from "./effects";
 
 export type BattlePlayer = "player" | "opponent";
@@ -20,7 +21,10 @@ export interface BattleSide {
   deck: CardListItem[];
   hand: CardListItem[];
   lifeCards: CardListItem[];
+  /** Character area only. Stage cards never enter this collection. */
   board: BattleZoneCard[];
+  /** The single dedicated Stage area defined by the official rules. */
+  stage?: BattleZoneCard;
   trash: CardListItem[];
   donTotal: number;
   donRested: number;
@@ -43,10 +47,35 @@ export interface PendingEffectChoice {
   actor: BattlePlayer;
   sourceCardId: string;
   sourceName: string;
-  action: EffectAction;
+  action: Extract<EffectAction, { target: unknown }>;
   remainingActions: EffectAction[];
   legalTargets: BattleTargetRef[];
   trigger: TriggeredEffect["trigger"];
+}
+
+export interface PendingAttackTargetChoice {
+  type: "attack_target";
+  attacker: BattlePlayer;
+  attackerKind: "leader" | "character";
+  attackerInstanceId: string;
+  legalTargets: BattleTargetRef[];
+  cpuSkill: CpuSkill;
+}
+
+export interface SearchChoiceEntry {
+  lookedIndex: number;
+  card: CardListItem;
+}
+
+export interface PendingSearchChoice {
+  type: "search";
+  actor: BattlePlayer;
+  sourceCardId: string;
+  sourceName: string;
+  action: Extract<EffectAction, { type: "search" }>;
+  remainingActions: EffectAction[];
+  trigger: TriggeredEffect["trigger"];
+  legalChoices: SearchChoiceEntry[];
 }
 
 export interface PendingDefenseChoice {
@@ -67,6 +96,15 @@ export interface AttackContext {
   attackerName: string;
   attackPower: number;
   target: BattleTargetRef;
+  cpuSkill: CpuSkill;
+}
+
+export interface CpuAttackQueue {
+  cpuSkill: CpuSkill;
+  attacks: Array<
+    | { kind: "leader"; instanceId: "opponent:leader" }
+    | { kind: "character"; instanceId: string }
+  >;
 }
 
 export interface PendingTriggerChoice {
@@ -78,6 +116,8 @@ export interface PendingTriggerChoice {
 
 export type PendingChoice =
   | PendingEffectChoice
+  | PendingAttackTargetChoice
+  | PendingSearchChoice
   | PendingDefenseChoice
   | PendingTriggerChoice;
 
@@ -90,7 +130,7 @@ export interface BattleState {
   log: string[];
   pending?: PendingChoice;
   queuedAttack?: AttackContext;
-  resumePlayerTurn?: boolean;
+  cpuAttackQueue?: CpuAttackQueue;
   winner?: BattleWinner;
   sequence: number;
 }

@@ -22,13 +22,13 @@ test("golden verified cards compile to their exact structured effects", () => {
   assert.deepEqual(compileCardEffect(GOLDEN_KO).effects[0]?.actions, [
     {
       type: "ko",
-      target: { owner: "opponent", zones: ["character"], count: 1, maxCost: 2 },
+      target: { owner: "opponent", zones: ["character"], count: 1, maxCost: 2, optional: true },
     },
   ]);
   assert.deepEqual(compileCardEffect(GOLDEN_REST).effects[0]?.actions, [
     {
       type: "rest",
-      target: { owner: "opponent", zones: ["character"], count: 1, maxCost: 2 },
+      target: { owner: "opponent", zones: ["character"], count: 1, maxCost: 2, optional: true },
     },
   ]);
   assert.equal(compileCardEffect(GOLDEN_BOUNCE).effects[0]?.actions[0]?.type, "return_to_hand");
@@ -40,6 +40,8 @@ test("golden Search and OnAttack facts preserve filters and modifier values", ()
       type: "search",
       lookAt: 5,
       count: 1,
+      optional: true,
+      remainderDestination: "bottom",
       feature: "麦わらの一味",
       excludeName: "ナミ",
       cardType: undefined,
@@ -50,11 +52,16 @@ test("golden Search and OnAttack facts preserve filters and modifier values", ()
   assert.deepEqual(compileCardEffect(GOLDEN_ON_ATTACK).effects[0]?.actions, [
     {
       type: "power_modifier",
-      target: { owner: "opponent", zones: ["character"], count: 1 },
+      target: { owner: "opponent", zones: ["character"], count: 1, optional: true },
       amount: -2_000,
       duration: "turn",
     },
   ]);
+  assert.equal(compileCardEffect(GOLDEN_SEARCH).status, "partial");
+  assert.match(
+    compileCardEffect(GOLDEN_SEARCH).unsupportedReasons.join(" "),
+    /任意順序選択/,
+  );
 });
 
 test("Search compiler preserves printed color restrictions", () => {
@@ -105,4 +112,29 @@ test("verified but unparsed passive text is unsupported, never silently supporte
   });
   assert.equal(definition.status, "unsupported");
   assert.match(definition.unsupportedReasons.join(" "), /構造化できません/);
+});
+
+test("exact one and up-to-one remain semantically distinct", () => {
+  const exact = compileCardEffect({
+    ...GOLDEN_KO,
+    id: "TEST-EXACT-ONE",
+    effectText: "[登場時]相手のコスト2以下のキャラ1枚を、KOする。",
+  });
+  const optional = compileCardEffect(GOLDEN_KO);
+  const exactAction = exact.effects[0]?.actions[0];
+  const optionalAction = optional.effects[0]?.actions[0];
+  assert.equal(exactAction && "target" in exactAction ? exactAction.target.optional : undefined, false);
+  assert.equal(optionalAction && "target" in optionalAction ? optionalAction.target.optional : undefined, true);
+});
+
+test("parsed Activate Main remains partial until its activation pipeline exists", () => {
+  const definition = compileCardEffect({
+    ...GOLDEN_DRAW,
+    id: "TEST-ACTIVATE-MAIN",
+    mechanics: ["ActivateMain"],
+    effectText: "[起動メイン]カード1枚を引く。",
+  });
+  assert.equal(definition.effects[0]?.trigger, "activate_main");
+  assert.equal(definition.status, "partial");
+  assert.match(definition.unsupportedReasons.join(" "), /pipeline/);
 });

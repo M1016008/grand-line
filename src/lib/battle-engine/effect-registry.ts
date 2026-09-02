@@ -109,6 +109,23 @@ export function compileCardEffect(card: CardListItem): CardEffectDefinition {
   if (effectText.includes("[カウンター]")) {
     unsupportedReasons.push("イベントのCounter効果はv1未対応です");
   }
+  if (effects.some((effect) => effect.trigger === "activate_main")) {
+    unsupportedReasons.push("Activate Mainの起動UI/pipelineは未対応です");
+  }
+  if (
+    effects.some((effect) =>
+      effect.actions.some((action) => action.type === "search"),
+    ) &&
+    effectText.includes("好きな順番")
+  ) {
+    unsupportedReasons.push("Search残余カードの任意順序選択は未対応です");
+  }
+  if (
+    card.cardType === "LEADER" &&
+    effects.some((effect) => !["on_attack"].includes(effect.trigger))
+  ) {
+    unsupportedReasons.push("Leaderは構造化済みOnAttack以外のtriggerを未対応です");
+  }
   const requestedMechanics = new Set([
     "OnPlay",
     "OnAttack",
@@ -213,7 +230,7 @@ function parseActions(segmentRaw: string): { actions: EffectAction[]; reason?: s
 function parseSearch(segment: string): Extract<EffectAction, { type: "search" }> | null {
   if (!/残りを.*デッキの下に置く。?$/.test(segment)) return null;
   const match = segment.match(
-    /^自分のデッキの上から(\d+)枚を見て、(.+?)1枚までを公開し、手札に加える。その後、残りを.*デッキの下に置く。?$/,
+    /^自分のデッキの上から(\d+)枚を見て、(.+?)1枚(まで)?を公開し、手札に加える。その後、残りを.*デッキの下に置く。?$/,
   );
   if (!match) return null;
   const criteria = match[2];
@@ -240,6 +257,8 @@ function parseSearch(segment: string): Extract<EffectAction, { type: "search" }>
     type: "search",
     lookAt: Number(match[1]),
     count: 1,
+    optional: Boolean(match[3]),
+    remainderDestination: "bottom",
     feature,
     excludeName,
     ...(nameIncludes ? { nameIncludes } : {}),
@@ -255,7 +274,7 @@ function parseTargetedAction(
 ): Extract<EffectAction, { target: TargetSpec }> | null {
   const normalized = segment.replace(/持ち主の/g, "");
   const ko = normalized.match(
-    /^相手の(?:(レスト|アクティブ)の)?(?:(?:元々の)?コスト(\d+)以下の)?キャラ1枚までを、?KOする。?$/,
+    /^相手の(?:(レスト|アクティブ)の)?(?:(?:元々の)?コスト(\d+)以下の)?キャラ1枚(まで)?を、?KOする。?$/,
   );
   if (ko) {
     const target = opponentCharacter();
@@ -263,46 +282,48 @@ function parseTargetedAction(
     const maxCost = numberValue(ko[2]);
     if (targetState) target.state = targetState;
     if (maxCost !== undefined) target.maxCost = maxCost;
+    target.optional = Boolean(ko[3]);
     return {
       type: "ko",
       target,
     };
   }
   const rest = normalized.match(
-    /^相手の(?:(?:元々の)?コスト(\d+)以下の)?キャラ1枚までを、?レストにする。?$/,
+    /^相手の(?:(?:元々の)?コスト(\d+)以下の)?キャラ1枚(まで)?を、?レストにする。?$/,
   );
   if (rest) {
-    return { type: "rest", target: opponentCharacter({ maxCost: numberValue(rest[1]) }) };
+    return { type: "rest", target: opponentCharacter({ maxCost: numberValue(rest[1]), optional: Boolean(rest[2]) }) };
   }
   const opponentBounce = normalized.match(
-    /^相手の(?:(?:元々の)?コスト(\d+)以下の)?キャラ1枚までを、?手札に戻す。?$/,
+    /^相手の(?:(?:元々の)?コスト(\d+)以下の)?キャラ1枚(まで)?を、?手札に戻す。?$/,
   );
   if (opponentBounce) {
     return {
       type: "return_to_hand",
-      target: opponentCharacter({ maxCost: numberValue(opponentBounce[1]) }),
+      target: opponentCharacter({ maxCost: numberValue(opponentBounce[1]), optional: Boolean(opponentBounce[2]) }),
     };
   }
   const eitherPowerBounce = normalized.match(
-    /^(?:元々の)?パワー(\d+)のキャラ1枚までを、?手札に戻す。?$/,
+    /^(?:元々の)?パワー(\d+)のキャラ1枚(まで)?を、?手札に戻す。?$/,
   );
   if (eitherPowerBounce) {
     return {
       type: "return_to_hand",
-      target: { owner: "either", zones: ["character"], minPower: Number(eitherPowerBounce[1]), maxPower: Number(eitherPowerBounce[1]), count: 1 },
+      target: { owner: "either", zones: ["character"], minPower: Number(eitherPowerBounce[1]), maxPower: Number(eitherPowerBounce[1]), count: 1, optional: Boolean(eitherPowerBounce[2]) },
     };
   }
   const modifier = normalized.match(
-    /^(自分|相手)の(リーダーかキャラ|キャラ)1枚までを、このターン中、(パワー|コスト)([+＋－-])(\d+)。?$/,
+    /^(自分|相手)の(リーダーかキャラ|キャラ)1枚(まで)?を、このターン中、(パワー|コスト)([+＋－-])(\d+)。?$/,
   );
   if (modifier) {
-    const amount = Number(modifier[5]) * (/[-－]/.test(modifier[4]) ? -1 : 1);
+    const amount = Number(modifier[6]) * (/[-－]/.test(modifier[5]) ? -1 : 1);
     const target: TargetSpec = {
       owner: modifier[1] === "自分" ? "own" : "opponent",
       zones: modifier[2] === "リーダーかキャラ" ? ["leader", "character"] : ["character"],
       count: 1,
+      optional: Boolean(modifier[3]),
     };
-    return modifier[3] === "パワー"
+    return modifier[4] === "パワー"
       ? { type: "power_modifier", target, amount, duration: "turn" }
       : { type: "cost_modifier", target, amount, duration: "turn" };
   }
