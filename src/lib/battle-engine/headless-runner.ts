@@ -59,7 +59,25 @@ export interface HeadlessBattleOptions {
   maxTurns?: number;
   maxActionsPerTurn?: number;
   maxPendingResolutions?: number;
+  environment?: HeadlessBattleEnvironment;
 }
+
+export interface HeadlessEnvironmentInput {
+  playerDeck: PracticeDeck;
+  opponentDeck: PracticeDeck;
+  cards: CardListItem[];
+}
+
+/** Immutable, match-independent facts that are safe to share across games. */
+export interface HeadlessBattleEnvironment {
+  readonly registry: BattleEffectRegistry;
+  readonly playerCoverage: DeckEffectCoverage;
+  readonly opponentCoverage: DeckEffectCoverage;
+}
+
+export type HeadlessEnvironmentBuilder = (
+  input: HeadlessEnvironmentInput,
+) => HeadlessBattleEnvironment;
 
 export interface HeadlessBattleResult {
   outcome: HeadlessBattleOutcome;
@@ -103,6 +121,10 @@ interface RunnerContext {
   actionsThisTurn: number;
   pendingThisTurn: number;
   guardReached: boolean;
+  pendingSupportedResolution?: {
+    cardId: string;
+    trigger: EffectTrigger;
+  };
 }
 
 const DEFAULT_MAX_TURNS = 20;
@@ -113,7 +135,9 @@ export function runHeadlessBattle(
   options: HeadlessBattleOptions,
 ): HeadlessBattleResult {
   const traceMode = options.traceMode ?? "none";
-  const registry = new BattleEffectRegistry(options.cards);
+  const environment =
+    options.environment ?? createHeadlessEnvironment(options);
+  const registry = environment.registry;
   const stats = emptyRulesBattleStats();
   let state = createBattleState(
     options.playerDeck,
@@ -199,8 +223,8 @@ export function runHeadlessBattle(
     turns: Math.min(state.turn, maxTurns),
     seed: options.seed,
     firstPlayer: options.firstPlayer,
-    playerCoverage: calculateDeckCoverage(options.playerDeck, registry),
-    opponentCoverage: calculateDeckCoverage(options.opponentDeck, registry),
+    playerCoverage: environment.playerCoverage,
+    opponentCoverage: environment.opponentCoverage,
     stats,
     finalState: summarizeBattleState(state),
     trace: context.trace.events,
@@ -210,8 +234,10 @@ export function runHeadlessBattle(
 /** Fixed-memory batch aggregation. Individual results and traces are discarded. */
 export function runHeadlessBatch(
   options: HeadlessBatchOptions,
+  buildEnvironment: HeadlessEnvironmentBuilder = createHeadlessEnvironment,
 ): HeadlessBatchResult {
   const games = Math.max(0, Math.floor(options.games));
+  const environment = options.environment ?? buildEnvironment(options);
   const outcomes: Record<HeadlessBattleOutcome, number> = {
     player: 0,
     opponent: 0,
@@ -236,6 +262,7 @@ export function runHeadlessBatch(
       seed: options.seed + index * 97,
       firstPlayer,
       traceMode: "none",
+      environment,
     });
     outcomes[result.outcome] += 1;
     reasons[result.reason] += 1;
@@ -244,6 +271,17 @@ export function runHeadlessBatch(
     }
   }
   return { games, outcomes, reasons, stats };
+}
+
+export function createHeadlessEnvironment(
+  input: HeadlessEnvironmentInput,
+): HeadlessBattleEnvironment {
+  const registry = new BattleEffectRegistry(input.cards);
+  return Object.freeze({
+    registry,
+    playerCoverage: calculateDeckCoverage(input.playerDeck, registry),
+    opponentCoverage: calculateDeckCoverage(input.opponentDeck, registry),
+  });
 }
 
 function runTurn(
@@ -277,8 +315,8 @@ function runTurn(
       0,
       sideOf(state, actor).donRested - sideOf(before, actor).donRested,
     );
-    observeEffectEncounter(context, card, card.cardType === "EVENT" ? "main" : "on_play");
     const trigger = card.cardType === "EVENT" ? "main" : "on_play";
+    const supportedOccurrence = observeEffectOccurrence(context, card, trigger);
     const actions = context.registry
       .get(card.id)
       .effects.find((effect) => effect.trigger === trigger)
@@ -294,6 +332,7 @@ function runTurn(
     });
     state = resolvePending(state, context);
     if (context.guardReached) return state;
+    if (supportedOccurrence) recordSupportedEffectResolution(context);
   }
 
   while (!state.pending && !state.winner) {
@@ -370,7 +409,21 @@ function resolvePending(
       context.stats.attacksDeclared += 1;
       if (pending.attackerKind === "leader") context.stats.leaderAttacks += 1;
       else context.stats.characterAttacks += 1;
-      if (attackerCard) observeEffectEncounter(context, attackerCard, "on_attack");
+      if (attackerCard) {
+        const supportedOccurrence = observeEffectOccurrence(
+          context,
+          attackerCard,
+          "on_attack",
+        );
+        if (supportedOccurrence) {
+          startOrCompleteSupportedResolution(
+            context,
+            attackerCard.id,
+            "on_attack",
+            state,
+          );
+        }
+      }
       context.trace.push("attack_declared", state, {
         actor: pending.attacker,
         cardId: attackerCard?.id,
@@ -391,6 +444,7 @@ function resolvePending(
         context.guardReached = true;
         break;
       }
+      completePendingSupportedResolution(context, state);
       context.trace.push("effect_target", state, {
         actor: pending.actor,
         cardId: pending.sourceCardId,
@@ -409,6 +463,7 @@ function resolvePending(
         context.guardReached = true;
         break;
       }
+      completePendingSupportedResolution(context, state);
       context.stats.searchesResolved += 1;
       context.trace.push("search_choice", state, {
         actor: pending.actor,
@@ -424,7 +479,14 @@ function resolvePending(
       );
       if (activate) {
         context.stats.triggersActivated += 1;
-        observeEffectEncounter(context, pending.revealedCard, "trigger", true);
+        if (isSupportedEffect(context, pending.revealedCard, "trigger")) {
+          startOrCompleteSupportedResolution(
+            context,
+            pending.revealedCard.id,
+            "trigger",
+            state,
+          );
+        }
       }
       else context.stats.triggersDeclined += 1;
       context.trace.push("trigger_choice", state, {
@@ -492,7 +554,7 @@ function resolveDefense(
   context.stats.damageDealt += lifeDelta;
   if (lifeDelta > 0 && topLife?.triggerText) {
     context.stats.triggersRevealed += 1;
-    observeEffectEncounter(context, topLife, "trigger", false);
+    observeEffectOccurrence(context, topLife, "trigger");
   }
   context.trace.push("attack_resolved", next, {
     actor: current.attacker,
@@ -519,26 +581,71 @@ function performAction(
   return next;
 }
 
-function observeEffectEncounter(
+/** Records one printed/structured effect occurrence, never its resolution. */
+function observeEffectOccurrence(
   context: RunnerContext,
   card: CardListItem,
   trigger: EffectTrigger,
-  resolved = true,
-): void {
+): boolean {
   const definition = context.registry.get(card.id);
   const hasEffect = definition.effects.some((effect) => effect.trigger === trigger);
   const hasPrintedTrigger = trigger === "trigger" && Boolean(card.triggerText);
   const hasMechanic = card.mechanics.some((mechanic) =>
     triggerMechanics(trigger).includes(mechanic),
   );
-  if (!hasEffect && !hasPrintedTrigger && !hasMechanic) return;
-  if (definition.status === "supported" && hasEffect && resolved) {
-    context.stats.supportedEffectsResolved += 1;
-  } else if (definition.status === "partial") {
+  if (!hasEffect && !hasPrintedTrigger && !hasMechanic) return false;
+  if (definition.status === "partial") {
     context.stats.partialEffectsEncountered += 1;
-  } else {
+  } else if (definition.status === "unsupported") {
     context.stats.unsupportedEffectsEncountered += 1;
   }
+  return definition.status === "supported" && hasEffect;
+}
+
+function isSupportedEffect(
+  context: RunnerContext,
+  card: CardListItem,
+  trigger: EffectTrigger,
+): boolean {
+  const definition = context.registry.get(card.id);
+  return (
+    definition.status === "supported" &&
+    definition.effects.some((effect) => effect.trigger === trigger)
+  );
+}
+
+function recordSupportedEffectResolution(context: RunnerContext): void {
+  context.stats.supportedEffectsResolved += 1;
+}
+
+function startOrCompleteSupportedResolution(
+  context: RunnerContext,
+  cardId: string,
+  trigger: EffectTrigger,
+  state: BattleState,
+): void {
+  if (isPendingEffectFrom(state, cardId)) {
+    context.pendingSupportedResolution = { cardId, trigger };
+    return;
+  }
+  recordSupportedEffectResolution(context);
+}
+
+function completePendingSupportedResolution(
+  context: RunnerContext,
+  state: BattleState,
+): void {
+  const pending = context.pendingSupportedResolution;
+  if (!pending || isPendingEffectFrom(state, pending.cardId)) return;
+  context.pendingSupportedResolution = undefined;
+  recordSupportedEffectResolution(context);
+}
+
+function isPendingEffectFrom(state: BattleState, cardId: string): boolean {
+  return (
+    (state.pending?.type === "effect_target" || state.pending?.type === "search") &&
+    state.pending.sourceCardId === cardId
+  );
 }
 
 function cardsAreConserved(

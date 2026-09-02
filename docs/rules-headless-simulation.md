@@ -84,11 +84,20 @@ score-at-limit heuristic is generated.
 
 `runHeadlessBatch` aggregates outcomes, reasons, and statistics while discarding
 individual matches and always using `none`, so memory does not grow with a full
-event stream.
+event stream. Before the game loop it builds one `HeadlessBattleEnvironment`
+containing the compiled effect registry and both deck coverage reports. Every
+game reads that shared environment while keeping all mutable battle state local
+to the match. Single-match callers may also precompile and pass the same
+environment explicitly.
 
 During a pending Trigger decision, the revealed Life card is counted in an
 explicit `resolving` transit slot. After resolution it returns to hand, field, or
 trash. This keeps conservation checks exact across every intermediate state.
+
+Effect metrics distinguish an occurrence from a completed resolution. Partial
+and unsupported text is counted once when encountered. A supported effect is
+counted only when its Kernel resolution is reached; revealing and then
+activating one Trigger never records two encounters.
 
 ## Known v1 boundaries
 

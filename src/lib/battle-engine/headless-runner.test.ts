@@ -10,7 +10,11 @@ import {
   declareLeaderAttack,
   endBattleTurn,
 } from "./engine";
-import { runHeadlessBatch, runHeadlessBattle } from "./headless-runner";
+import {
+  createHeadlessEnvironment,
+  runHeadlessBatch,
+  runHeadlessBattle,
+} from "./headless-runner";
 import {
   GOLDEN_BLOCKER,
   GOLDEN_BOUNCE,
@@ -162,6 +166,136 @@ test("fixed-memory batch aggregates outcomes without retaining matches", () => {
     Object.values(batch.reasons).reduce((sum, count) => sum + count, 0),
     12,
   );
+});
+
+test("N-game batch builds its precompiled environment exactly once", () => {
+  let builds = 0;
+  const batch = runHeadlessBatch(
+    {
+      playerDeck: PLAYER_DECK,
+      opponentDeck: OPPONENT_DECK,
+      cards: ALL_CARDS,
+      games: 9,
+      seed: 2_100,
+      maxTurns: 3,
+    },
+    (input) => {
+      builds += 1;
+      return createHeadlessEnvironment(input);
+    },
+  );
+  assert.equal(batch.games, 9);
+  assert.equal(builds, 1);
+});
+
+test("precompiled and automatically compiled single matches are identical", () => {
+  const options = {
+    playerDeck: PLAYER_DECK,
+    opponentDeck: OPPONENT_DECK,
+    cards: ALL_CARDS,
+    seed: 2_101,
+    firstPlayer: "opponent" as const,
+    maxTurns: 5,
+    traceMode: "summary" as const,
+  };
+  const environment = createHeadlessEnvironment(options);
+  assert.deepEqual(
+    runHeadlessBattle({ ...options, environment }),
+    runHeadlessBattle(options),
+  );
+});
+
+test("shared precompiled environment has no state leakage between games", () => {
+  const environment = createHeadlessEnvironment({
+    playerDeck: PLAYER_DECK,
+    opponentDeck: OPPONENT_DECK,
+    cards: ALL_CARDS,
+  });
+  const options = {
+    playerDeck: PLAYER_DECK,
+    opponentDeck: OPPONENT_DECK,
+    cards: ALL_CARDS,
+    firstPlayer: "player" as const,
+    maxTurns: 5,
+    traceMode: "full" as const,
+    environment,
+  };
+  const baseline = runHeadlessBattle({ ...options, seed: 2_102 });
+  runHeadlessBattle({ ...options, seed: 2_103 });
+  assert.deepEqual(runHeadlessBattle({ ...options, seed: 2_102 }), baseline);
+});
+
+test("Trigger metrics separate encounter status from supported resolution", async (t) => {
+  const supportedTrigger = makeCard({
+    id: "TEST-TRIGGER-SUPPORTED",
+    name: "Supported Trigger",
+    cardType: "EVENT",
+    power: null,
+    mechanics: ["Trigger"],
+    triggerText: "[トリガー]カード1枚を引く。",
+    hasTrigger: true,
+  });
+  const partialTrigger = makeCard({
+    ...supportedTrigger,
+    id: "TEST-TRIGGER-PARTIAL",
+    name: "Partial Trigger",
+    effectText: "[カウンター]未対応のカウンター効果。",
+  });
+  const unsupportedTrigger = makeCard({
+    ...supportedTrigger,
+    id: "TEST-TRIGGER-UNSUPPORTED",
+    name: "Unsupported Trigger",
+    triggerText: "[トリガー]裁定条件を安全に構造化できない効果。",
+  });
+  const cases = [
+    {
+      card: supportedTrigger,
+      expected: { supported: 1, partial: 0, unsupported: 0 },
+    },
+    {
+      card: partialTrigger,
+      expected: { supported: 0, partial: 1, unsupported: 0 },
+    },
+    {
+      card: unsupportedTrigger,
+      expected: { supported: 0, partial: 0, unsupported: 1 },
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(
+      `${scenario.card.name}: resolved/partial/unsupported metrics stay exclusive`,
+      () => {
+        const result = findScenario(
+          featureDeck(`trigger-attacker-${scenario.card.id}`, PLAYER_LEADER, []),
+          featureDeck(
+            `trigger-defender-${scenario.card.id}`,
+            OPPONENT_LEADER,
+            [scenario.card],
+            1,
+          ),
+          (candidate) => candidate.stats.triggersRevealed === 1,
+          "level1",
+        );
+        assert.ok(result, `${scenario.card.name} was not revealed`);
+        assert.equal(
+          result.stats.supportedEffectsResolved,
+          scenario.expected.supported,
+          scenario.card.name,
+        );
+        assert.equal(
+          result.stats.partialEffectsEncountered,
+          scenario.expected.partial,
+          scenario.card.name,
+        );
+        assert.equal(
+          result.stats.unsupportedEffectsEncountered,
+          scenario.expected.unsupported,
+          scenario.card.name,
+        );
+      },
+    );
+  }
 });
 
 test("auto policy uses the minimum legal Counter and skips harmful optional targets", () => {
