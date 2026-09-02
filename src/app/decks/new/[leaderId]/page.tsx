@@ -17,7 +17,7 @@ interface PageProps {
 export async function generateMetadata({ params }: PageProps) {
   const { leaderId } = await params;
   const leader = await getCard(leaderId);
-  return { title: leader ? `デッキを組む — ${leader.name}` : "デッキを組む" };
+  return { title: leader ? `デッキ構築 — ${leader.name}` : "デッキ構築" };
 }
 
 export default async function DeckBuilderPage({ params }: PageProps) {
@@ -50,7 +50,7 @@ export default async function DeckBuilderPage({ params }: PageProps) {
         <div className="flex items-center justify-between">
           <div>
             <p className="text-primary/80 text-xs tracking-[0.4em] uppercase">
-              Step 2 of 2 — Deck Builder
+              デッキ構築
             </p>
             <h1 className="font-display text-3xl tracking-wide">
               {leader.name}

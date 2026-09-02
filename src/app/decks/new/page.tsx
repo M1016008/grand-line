@@ -19,14 +19,14 @@ export default async function LeaderPickerPage() {
       <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 py-10">
         <header>
           <p className="text-primary/80 text-xs tracking-[0.4em] uppercase">
-            Step 1 of 2
+            新しいデッキ
           </p>
           <h1 className="font-display text-foreground text-3xl tracking-wide">
             リーダーを選ぶ
           </h1>
           <p className="text-muted-foreground mt-2 text-sm">
-            ワンピTCGはリーダーがデッキ全体の挙動を規定する。Grand Line
-            では選んだリーダーを軸に色制約・特徴制約が自動で適用されます。
+            ワンピースカードゲームのデッキはリーダーが軸になります。Grand Line
+            では選んだリーダーをもとに色制約・特徴制約が自動で反映されます。
           </p>
         </header>
 

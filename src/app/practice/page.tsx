@@ -22,11 +22,12 @@ export default async function PracticePage() {
         <header className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="text-primary/80 text-xs tracking-[0.4em] uppercase">
-              Practice Lab
+              シミュレーション中枢
             </p>
-            <h1 className="font-display text-3xl tracking-wide">
-              コンピューター練習
-            </h1>
+            <h1 className="font-display text-3xl tracking-wide">検証ラボ</h1>
+            <p className="text-muted-foreground mt-2 text-sm">
+              simulation / batch / training / statistics を扱う検証場所です。
+            </p>
           </div>
           <div className="text-muted-foreground text-sm">
             {pool.totalAll.toLocaleString()} 枚 · {leaders.total.toLocaleString()} リーダー

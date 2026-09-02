@@ -85,7 +85,9 @@ test("workflow and result layouts retain mobile overflow and responsive columns"
   assert.match(benchmark, /overflow-x-auto/);
   assert.match(benchmark, /min-w-\[680px\]/);
   assert.match(optimizer, /sm:grid-cols-\[minmax\(0,1fr\)_auto_minmax\(0,1fr\)\]/);
+  assert.match(header, /data-primary-navigation-scroll/);
   assert.match(header, /min-w-0 flex-1 items-center gap-1 overflow-x-auto/);
+  assert.match(header, /data-data-navigation-menu className="relative shrink-0"/);
   assert.match(header, /shrink-0 whitespace-nowrap/);
 });
 

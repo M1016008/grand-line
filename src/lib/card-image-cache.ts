@@ -2,6 +2,12 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import {
+  resolveDatabaseConfig,
+  type DatabaseEnvironment,
+  type DatabaseConfig,
+} from "@/db/config";
+
 const ALLOWED_HOSTS = new Set([
   "www.onepiece-cardgame.com",
   "en.onepiece-cardgame.com",
@@ -45,14 +51,19 @@ export function parseAllowedCardImageUrl(raw: string): URL {
   return target;
 }
 
-export function imageCacheRoot() {
-  if (process.env.IMAGE_CACHE_DIR) {
-    return path.resolve(/*turbopackIgnore: true*/ process.env.IMAGE_CACHE_DIR);
+export function imageCacheRoot(
+  env: DatabaseEnvironment = process.env,
+  databaseConfig: DatabaseConfig = resolveDatabaseConfig(env),
+) {
+  if (env.IMAGE_CACHE_DIR) {
+    return path.resolve(/*turbopackIgnore: true*/ env.IMAGE_CACHE_DIR);
   }
 
-  const localDbPath = process.env.LOCAL_DB_PATH;
-  if (process.env.GRAND_LINE_DATABASE_MODE === "local" && localDbPath) {
-    return path.join(/*turbopackIgnore: true*/ path.dirname(localDbPath), "image-cache");
+  if (databaseConfig.kind === "local") {
+    return path.join(
+      /*turbopackIgnore: true*/ path.dirname(databaseConfig.localPath),
+      "image-cache",
+    );
   }
 
   return path.join(process.cwd(), "data", "cache", "card-images");

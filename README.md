@@ -55,6 +55,7 @@ cp .env.example .env.local
 
 # DB 接続先と件数を確認
 npm run db:status
+npm run db:verify
 
 # 開発サーバ
 npm run dev
@@ -76,6 +77,18 @@ LOCAL_DB_PATH="/Volumes/OWC Express 1M2 80G/grand-line-data/grand-line.db"
 
 任意で Turso を使う場合だけ、`GRAND_LINE_DATABASE_MODE="turso"` と
 `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` を設定します。
+
+同じMac上のfresh cloneでもSSD設定を失わないよう、次の共有ポインタも
+利用できます。`.env.local` の `LOCAL_DB_PATH` がある場合はそちらが優先です。
+
+```text
+~/.config/grand-line/database-path
+```
+
+ファイル内容はDBの絶対パス1行です。`npm run dev` と `npm start` は起動前に
+`db:verify` を実行し、空DB・公式verified欠損・leader欠損・参照不整合を検出すると
+fail closedします。意図的なモック確認だけ
+`GRAND_LINE_ALLOW_MOCK_DATA=1` を明示してください。
 
 ### 定期スクレイピング
 

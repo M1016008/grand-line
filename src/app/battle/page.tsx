@@ -22,9 +22,12 @@ export default async function BattlePage() {
         <header className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="text-primary/80 text-xs tracking-[0.4em] uppercase">
-              Battle Trainer
+              インタラクティブ対戦
             </p>
             <h1 className="font-display text-3xl tracking-wide">CPU対戦</h1>
+            <p className="text-muted-foreground mt-2 text-sm">
+              CPU対戦練習で、構築の勝率や判断力を実戦的にチェックします。
+            </p>
           </div>
           <div className="text-muted-foreground text-sm">
             {pool.totalAll.toLocaleString()} 枚 · 5段階CPU
