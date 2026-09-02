@@ -605,7 +605,8 @@ function addToBoard(
 }
 
 function beginTurn(state: BattleState, actor: BattlePlayer, firstTurn: boolean): BattleState {
-  let next = withSide(state, actor, refreshSide(sideOf(state, actor)));
+  let next = clearOutgoingTurnState(state, otherPlayer(actor));
+  next = withSide(next, actor, refreshSide(sideOf(next, actor)));
   next = { ...next, activePlayer: actor };
   if (!firstTurn) {
     const drawn = drawCards(next, actor, 1);
@@ -616,6 +617,28 @@ function beginTurn(state: BattleState, actor: BattlePlayer, firstTurn: boolean):
   }
   next = withSide(next, actor, addDon(sideOf(next, actor), firstTurn ? 1 : 2));
   return appendBattleLog(next, `Turn ${state.turn}: ${actorLabel(actor)}のターン`);
+}
+
+function clearOutgoingTurnState(
+  state: BattleState,
+  outgoing: BattlePlayer,
+): BattleState {
+  let next = state;
+  for (const owner of ["player", "opponent"] as const) {
+    const side = sideOf(next, owner);
+    next = withSide(next, owner, {
+      ...side,
+      leaderPowerModifier: 0,
+      leaderAttachedDon: owner === outgoing ? 0 : side.leaderAttachedDon,
+      board: side.board.map((zone) => ({
+        ...zone,
+        powerModifier: 0,
+        costModifier: 0,
+        attachedDon: owner === outgoing ? 0 : zone.attachedDon,
+      })),
+    });
+  }
+  return next;
 }
 
 function completeCpuTurnIfReady(state: BattleState): BattleState {

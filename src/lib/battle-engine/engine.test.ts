@@ -12,6 +12,7 @@ import {
   createBattleState,
   declareCharacterAttack,
   declareLeaderAttack,
+  endPlayerTurn,
   playCard,
   resolveTriggerChoice,
   useCounterCard,
@@ -285,6 +286,23 @@ test("DON attach adds 1000 power, refresh-safe counts never become negative", ()
   assert.equal(state.player.donRested, 2);
   assert.ok(state.player.donRested <= state.player.donTotal);
   assert.ok(state.player.lifeCards.length >= 0);
+});
+
+test("turn transition clears temporary modifiers and outgoing attached DON power", () => {
+  let state = battleState();
+  state.player.board = [
+    { ...zone(GOLDEN_ON_ATTACK, "temporary"), attachedDon: 1, powerModifier: 2_000 },
+  ];
+  state.player.donTotal = 3;
+  state.player.donRested = 1;
+  state.opponent.board = [
+    { ...zone(HIGH_TARGET, "debuffed"), powerModifier: -2_000, costModifier: -1 },
+  ];
+  state = endPlayerTurn(state, REGISTRY, "level1");
+  assert.equal(state.player.board[0]?.attachedDon, 0);
+  assert.equal(state.player.board[0]?.powerModifier, 0);
+  assert.equal(state.opponent.board[0]?.powerModifier, 0);
+  assert.equal(state.opponent.board[0]?.costModifier, 0);
 });
 
 test("board max5 fails closed before spending DON or removing hand", () => {
