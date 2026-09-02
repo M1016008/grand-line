@@ -10,7 +10,7 @@ export const metadata = { title: "対戦 — Grand Line" };
 export default async function BattlePage() {
   const [leaders, pool] = await Promise.all([
     listCards({ cardType: "LEADER", pageSize: 200 }),
-    listCards({ pageSize: 5000 }),
+    listCards({ pageSize: 5000, includeOfficialText: true }),
   ]);
 
   const usingMock = leaders.usingMock || pool.usingMock;
