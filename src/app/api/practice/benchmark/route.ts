@@ -9,9 +9,9 @@ import {
 import {
   BENCHMARK_SERVER_MAX_GAMES,
   BenchmarkDeckValidationError,
-  runPairedDeckBenchmark,
   strictDeckIntelligencePracticeDeck,
 } from "@/lib/deck-battle-benchmark";
+import { runRulesDeckBenchmark } from "@/lib/deck-rules-benchmark";
 import { DeckCopyResolutionError } from "@/lib/deck-intelligence-compare";
 import {
   VARIANT_PROFILE_IDS,
@@ -79,7 +79,7 @@ export async function POST(request: Request) {
 
   try {
     const [pool, regulations, savedOpponent] = await Promise.all([
-      listCards({ pageSize: 5_000 }),
+      listCards({ pageSize: 5_000, includeOfficialText: true }),
       activeRegulations(),
       body.opponent.kind === "saved"
         ? getSavedDeck(body.opponent.deckId)
@@ -116,10 +116,11 @@ export async function POST(request: Request) {
       regulations,
     });
     const startedAt = Date.now();
-    const benchmark = runPairedDeckBenchmark({
+    const benchmark = runRulesDeckBenchmark({
       variants,
       opponentDeck: opponent.deck,
       opponent: opponent.descriptor,
+      cards: pool.cards,
       games: body.games,
       cpuSkill: body.cpuSkill,
     });

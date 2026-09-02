@@ -413,6 +413,10 @@ export interface BenchmarkDependencies {
   simulate: typeof simulateMatch;
 }
 
+/**
+ * Legacy heuristic runner retained temporarily for Optimizer migration.
+ * User-facing Battle Benchmark requests must use deck-rules-benchmark.ts.
+ */
 export function runDeckOnBenchmarkSchedule(
   options: {
     deck: PracticeDeck;
@@ -481,6 +485,7 @@ export function runDeckOnBenchmarkSchedule(
   };
 }
 
+/** Legacy heuristic comparison retained temporarily for Optimizer migration. */
 export function runPairedDeckBenchmark(
   options: BenchmarkRunOptions,
   dependencies: BenchmarkDependencies = { simulate: simulateMatch },

@@ -20,22 +20,18 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { CardListItem } from "@/lib/cards";
-import {
-  BENCHMARK_SIZE_OPTIONS,
-  type BenchmarkVariantMetrics,
-  type DeckBattleBenchmarkResult,
-} from "@/lib/deck-battle-benchmark";
+import { BENCHMARK_SIZE_OPTIONS } from "@/lib/deck-battle-benchmark";
+import type {
+  DeckRulesBenchmarkResult,
+  RulesBenchmarkVariantMetrics,
+} from "@/lib/deck-rules-benchmark";
 import type { DeckCopyEntry } from "@/lib/deck-intelligence-compare";
 import {
   VARIANT_PROFILE_IDS,
   VARIANT_PROFILE_LABELS,
   type VariantProfile,
 } from "@/lib/deck-intelligence-preferences";
-import {
-  CPU_LEVELS,
-  type CpuSkill,
-  type WinReason,
-} from "@/lib/practice-log";
+import { CPU_LEVELS, type CpuSkill } from "@/lib/practice-log";
 
 interface DeckBattleBenchmarkProps {
   response: DeckVariantsSuggestion;
@@ -64,7 +60,7 @@ interface SavedDeckOption {
 }
 
 interface BenchmarkApiResponse {
-  benchmark: DeckBattleBenchmarkResult;
+  benchmark: DeckRulesBenchmarkResult;
   elapsedMs: number;
 }
 
@@ -375,44 +371,78 @@ function BenchmarkResults({
   const { benchmark } = response;
   const metricRows: Array<{
     label: string;
-    render: (metrics: BenchmarkVariantMetrics) => string;
+    render: (metrics: RulesBenchmarkVariantMetrics) => string;
   }> = [
     {
-      label: "Heuristic wins / games",
-      render: (metrics) => `${metrics.heuristicWins} / ${metrics.games}`,
+      label: "決着試合 / 全試行",
+      render: (metrics) => `${metrics.resolvedGames} / ${metrics.games}`,
     },
     {
-      label: "Heuristic win rate (95% CI)",
+      label: "決着試合勝率 (95% CI)",
       render: (metrics) =>
-        `${percent(metrics.heuristicWinRate)} (${percent(metrics.heuristicWinRateCi95.lower)}–${percent(metrics.heuristicWinRateCi95.upper)})`,
-    },
-    { label: "先攻", render: (metrics) => percent(metrics.firstPlayerWinRate) },
-    { label: "後攻", render: (metrics) => percent(metrics.secondPlayerWinRate) },
-    { label: "平均ターン", render: (metrics) => metrics.avgTurns.toFixed(1) },
-    {
-      label: "DON効率",
-      render: (metrics) => percent(metrics.averageDonEfficiency),
+        `${nullablePercent(metrics.resolvedWinRate)} (${confidenceInterval(metrics)})`,
     },
     {
-      label: "Trigger reveal / success",
+      label: "未決着 / 決着率",
       render: (metrics) =>
-        `${percent(metrics.triggerRevealRate)} / ${percent(metrics.triggerSuccessRate)}`,
+        `${metrics.inconclusiveGames} / ${percent(metrics.resolutionRate)}`,
     },
     {
-      label: "Mulligan keep / redraw",
+      label: "先攻 決着試合勝率",
+      render: (metrics) => nullablePercent(metrics.firstPlayer.resolvedWinRate),
+    },
+    {
+      label: "後攻 決着試合勝率",
+      render: (metrics) => nullablePercent(metrics.secondPlayer.resolvedWinRate),
+    },
+    {
+      label: "平均決着ターン",
+      render: (metrics) => nullableNumber(metrics.averageResolvedTurns),
+    },
+    {
+      label: "Leader damage / Deck out / Effect wins",
       render: (metrics) =>
-        `${nullablePercent(metrics.mulliganKeepWinRate)} / ${nullablePercent(metrics.mulliganRedrawWinRate)}`,
+        `${metrics.outcomes.leaderDamageWins} / ${metrics.outcomes.deckOutWins} / ${metrics.outcomes.effectWins}`,
     },
     {
-      label: "敗北時counter overflow",
-      render: (metrics) => metrics.counterOverflowOnLoss.toFixed(0),
+      label: "Turn limit / Engine guard",
+      render: (metrics) =>
+        `${metrics.outcomes.turnLimit} / ${metrics.outcomes.engineGuard}`,
+    },
+    {
+      label: "Attacks / game",
+      render: (metrics) => perGame(metrics.rulesStats.attacksDeclared, metrics.games),
+    },
+    {
+      label: "Blockers / Counter cards per game",
+      render: (metrics) =>
+        `${perGame(metrics.rulesStats.blockersUsed, metrics.games)} / ${perGame(metrics.rulesStats.counterCardsUsed, metrics.games)}`,
+    },
+    {
+      label: "Trigger reveal / activate",
+      render: (metrics) =>
+        `${metrics.rulesStats.triggersRevealed} / ${metrics.rulesStats.triggersActivated} (${triggerActivationRate(metrics)})`,
+    },
+    {
+      label: "Supported effects / game",
+      render: (metrics) =>
+        perGame(metrics.rulesStats.supportedEffectsResolved, metrics.games),
+    },
+    {
+      label: "Partial / Unsupported encounters",
+      render: (metrics) =>
+        `${metrics.rulesStats.partialEffectsEncountered} / ${metrics.rulesStats.unsupportedEffectsEncountered}`,
+    },
+    {
+      label: "DON attached / game",
+      render: (metrics) => perGame(metrics.rulesStats.donAttached, metrics.games),
     },
   ];
 
   return (
     <div className="border-border/40 space-y-4 border-t pt-4">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge variant="secondary">Benchmark result</Badge>
+        <Badge variant="secondary">Rules Kernel Benchmark v2</Badge>
         <span className="text-xs">対戦相手: {benchmark.opponent.name}</span>
         {benchmark.opponent.synthetic ? (
           <Badge variant="outline">Synthetic benchmark opponent</Badge>
@@ -421,7 +451,8 @@ function BenchmarkResults({
       <p className="text-muted-foreground text-[10px]">
         {benchmark.schedule.gamesPerVariant.toLocaleString()} games / variant・
         {benchmark.schedule.cpuSkill}・先攻{benchmark.schedule.playerFirstGames} / 後攻
-        {benchmark.schedule.playerSecondGames}・処理時間 {response.elapsedMs.toLocaleString()}ms
+        {benchmark.schedule.playerSecondGames}・Player policy {benchmark.schedule.playerPolicySkill}・
+        処理時間 {response.elapsedMs.toLocaleString()}ms
       </p>
 
       <div className="grid gap-2 lg:grid-cols-3">
@@ -434,23 +465,29 @@ function BenchmarkResults({
                   {VARIANT_PROFILE_LABELS[profile]}
                 </Badge>
                 <div>
-                  <div className="text-muted-foreground text-[9px]">試行上の勝率</div>
+                  <div className="text-muted-foreground text-[9px]">決着試合勝率</div>
                   <div className="font-mono text-base">
-                    {percent(metrics.heuristicWinRate)}
+                    {nullablePercent(metrics.resolvedWinRate)}
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[9px]">
+                  <span>決着試合</span>
+                  <span>{metrics.resolvedGames} / {metrics.games}</span>
+                  <span>未決着</span>
+                  <span>{metrics.inconclusiveGames} / {metrics.games}</span>
+                  <span>決着率</span>
+                  <span>{percent(metrics.resolutionRate)}</span>
                   <span>95% CI</span>
-                  <span>{percent(metrics.heuristicWinRateCi95.lower)}–{percent(metrics.heuristicWinRateCi95.upper)}</span>
+                  <span>{confidenceInterval(metrics)}</span>
                   <span>先攻</span>
-                  <span>{percent(metrics.firstPlayerWinRate)}</span>
+                  <span>{nullablePercent(metrics.firstPlayer.resolvedWinRate)}</span>
                   <span>後攻</span>
-                  <span>{percent(metrics.secondPlayerWinRate)}</span>
-                  <span>平均ターン</span>
-                  <span>{metrics.avgTurns.toFixed(1)}</span>
-                  <span>DON効率</span>
-                  <span>{percent(metrics.averageDonEfficiency)}</span>
+                  <span>{nullablePercent(metrics.secondPlayer.resolvedWinRate)}</span>
+                  <span>平均決着ターン</span>
+                  <span>{nullableNumber(metrics.averageResolvedTurns)}</span>
                 </div>
+                <CoverageSummary metrics={metrics} />
+                <BenchmarkWarnings metrics={metrics} />
               </CardContent>
             </Card>
           );
@@ -476,12 +513,9 @@ function BenchmarkResults({
               return (
                 <ResultSection key={profile} title={VARIANT_PROFILE_LABELS[profile]}>
                   <p>{personalityByProfile[profile]}</p>
-                  <p>主な勝ち方: {primaryWinReason(metrics.winReasons)}</p>
-                  <p>
-                    主な寄与カード: {metrics.topContributors
-                      .map((contribution) => contribution.name)
-                      .join(" / ") || "なし"}
-                  </p>
+                  <p>Rules Kernel内の主な決着理由: {primaryRulesWinReason(metrics)}</p>
+                  <p>決着試合: {metrics.resolvedGames} / {metrics.games}</p>
+                  <p>未決着: {metrics.inconclusiveGames} / {metrics.games}</p>
                 </ResultSection>
               );
             })}
@@ -520,19 +554,36 @@ function BenchmarkResults({
             <ResultSection title="案ごとの差分">
               {benchmark.relativeMetrics.map((relative) => (
                 <p key={`${relative.leftProfile}:${relative.rightProfile}`}>
-                  {VARIANT_PROFILE_LABELS[relative.leftProfile]} vs {VARIANT_PROFILE_LABELS[relative.rightProfile]}: win {signedPoints(relative.winRateDelta)} / turns {signed(relative.avgTurnsDelta)} / DON {signedPoints(relative.donEfficiencyDelta)} / first {signedPoints(relative.firstPlayerDelta)} / second {signedPoints(relative.secondPlayerDelta)}
+                  {VARIANT_PROFILE_LABELS[relative.leftProfile]} vs {VARIANT_PROFILE_LABELS[relative.rightProfile]}: 決着試合勝率 {nullableSignedPoints(relative.resolvedWinRateDelta)} / 決着率 {signedPoints(relative.resolutionRateDelta)} / 平均決着ターン {nullableSigned(relative.averageResolvedTurnsDelta)}
                 </p>
               ))}
             </ResultSection>
             <ResultSection title="同一seedでの結果">
+              <p>3案すべて決着: {benchmark.pairedOutcomes.allThreeResolved}</p>
+              <p>未決着を含む: {benchmark.pairedOutcomes.anyInconclusive}</p>
               <p>3案すべて勝ち: {benchmark.pairedOutcomes.allThreeWin}</p>
               <p>3案すべて負け: {benchmark.pairedOutcomes.allThreeLose}</p>
+              <p>3案すべて未決着: {benchmark.pairedOutcomes.allThreeInconclusive}</p>
               <p>推奨のみ勝ち: {benchmark.pairedOutcomes.recommendedOnlyWins}</p>
               <p>安定のみ勝ち: {benchmark.pairedOutcomes.consistencyOnlyWins}</p>
               <p>特化のみ勝ち: {benchmark.pairedOutcomes.specializationOnlyWins}</p>
               <p>2案が勝ち: {benchmark.pairedOutcomes.twoVariantsWin}</p>
             </ResultSection>
           </div>
+
+          <ResultSection title="Pairwise — 同一seedの決着試合のみ">
+            {benchmark.pairwiseComparisons.map((comparison) => (
+              <p key={`${comparison.leftProfile}:${comparison.rightProfile}`}>
+                {VARIANT_PROFILE_LABELS[comparison.leftProfile]} vs {VARIANT_PROFILE_LABELS[comparison.rightProfile]}: 両方決着 {comparison.bothResolved} / 未決着除外 {comparison.excludedByInconclusive} / 左のみ勝ち {comparison.leftOnlyWins} / 右のみ勝ち {comparison.rightOnlyWins} / 純差 {signed(comparison.netResolvedWins)}
+              </p>
+            ))}
+          </ResultSection>
+
+          <ResultSection title="対戦相手の効果再現">
+            <p>Main 50: supported {benchmark.opponentCoverage.supportedCards} / partial {benchmark.opponentCoverage.partialCards} / unsupported {benchmark.opponentCoverage.unsupportedCards}</p>
+            <p>Leader: {benchmark.opponentCoverage.leaderStatus}</p>
+            <p>complete: {benchmark.opponentCoverage.complete ? "yes" : "no"}</p>
+          </ResultSection>
 
           <ResultSection title="決定論的な読み取り">
             <ul className="list-inside list-disc space-y-1">
@@ -545,8 +596,57 @@ function BenchmarkResults({
       ) : null}
 
       <p className="text-source-unverified text-[10px] leading-relaxed">
-        95% CIはPractice engine内部の反復試行に対する統計的不確実性です。公式ゲーム環境への精度保証ではありません。{benchmark.disclosureJa}
+        決着試合勝率と95% CIは、Rules Kernel内で決着した試合だけを分母にしています。{benchmark.disclosureJa}
       </p>
+    </div>
+  );
+}
+
+function CoverageSummary({
+  metrics,
+}: {
+  metrics: RulesBenchmarkVariantMetrics;
+}) {
+  const coverage = metrics.effectCoverage;
+  return (
+    <div className="border-border/30 space-y-1 rounded-md border p-2 text-[9px]">
+      <div className="text-muted-foreground tracking-widest uppercase">効果再現</div>
+      <p>
+        Main 50: supported {coverage.supportedCards} / partial {coverage.partialCards} /
+        unsupported {coverage.unsupportedCards}
+      </p>
+      <p>Leader: {coverage.leaderStatus}</p>
+      <p>complete: {coverage.complete ? "yes" : "no"}</p>
+    </div>
+  );
+}
+
+function BenchmarkWarnings({
+  metrics,
+}: {
+  metrics: RulesBenchmarkVariantMetrics;
+}) {
+  const coverage = metrics.effectCoverage;
+  return (
+    <div className="space-y-1 text-[9px] leading-relaxed">
+      {!coverage.complete ||
+      coverage.partialCards > 0 ||
+      coverage.unsupportedCards > 0 ||
+      coverage.leaderStatus !== "supported" ? (
+        <p className="text-source-unverified">
+          partial / unsupportedまたはLeader未対応を含むため、効果を完全再現した比較ではありません。
+        </p>
+      ) : null}
+      {metrics.resolutionRate < 0.7 ? (
+        <p className="text-source-unverified">
+          現在のRules Kernel再現範囲またはturn limitにより未決着が多いため、比較の解釈に注意してください。
+        </p>
+      ) : null}
+      {metrics.outcomes.engineGuard > 0 ? (
+        <p className="text-destructive font-medium">
+          engine guardによる未決着が発生しています。
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -568,20 +668,6 @@ function ResultSection({
   );
 }
 
-function primaryWinReason(winReasons: Record<WinReason, number>): string {
-  const labels: Record<WinReason, string> = {
-    leader_damage: "Leader damage",
-    deck_out: "Deck out",
-    effect_win: "Effect win",
-    score_at_limit: "Turn-limit heuristic score",
-  };
-  const [reason, count] = (Object.entries(winReasons) as Array<[WinReason, number]>).reduce(
-    (best, current) => (current[1] > best[1] ? current : best),
-    ["leader_damage", 0] as [WinReason, number],
-  );
-  return count > 0 ? `${labels[reason]} (${count})` : "なし";
-}
-
 function percent(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
 }
@@ -590,8 +676,48 @@ function nullablePercent(value: number | null): string {
   return value === null ? "—" : percent(value);
 }
 
+function confidenceInterval(metrics: RulesBenchmarkVariantMetrics): string {
+  const interval = metrics.resolvedWinRateCi95;
+  return interval ? `${percent(interval.lower)}–${percent(interval.upper)}` : "—";
+}
+
+function nullableNumber(value: number | null): string {
+  return value === null ? "—" : value.toFixed(1);
+}
+
+function perGame(value: number, games: number): string {
+  return games > 0 ? (value / games).toFixed(2) : "—";
+}
+
+function triggerActivationRate(metrics: RulesBenchmarkVariantMetrics): string {
+  const revealed = metrics.rulesStats.triggersRevealed;
+  return revealed > 0
+    ? percent(metrics.rulesStats.triggersActivated / revealed)
+    : "—";
+}
+
+function primaryRulesWinReason(metrics: RulesBenchmarkVariantMetrics): string {
+  const reasons = [
+    ["Leader damage", metrics.outcomes.leaderDamageWins],
+    ["Deck out", metrics.outcomes.deckOutWins],
+    ["Effect win", metrics.outcomes.effectWins],
+  ] as const;
+  const primary = reasons.reduce((best, current) =>
+    current[1] > best[1] ? current : best,
+  );
+  return primary[1] > 0 ? `${primary[0]} (${primary[1]})` : "なし";
+}
+
 function signedPoints(value: number): string {
   return `${value > 0 ? "+" : ""}${(value * 100).toFixed(1)}pt`;
+}
+
+function nullableSignedPoints(value: number | null): string {
+  return value === null ? "—" : signedPoints(value);
+}
+
+function nullableSigned(value: number | null): string {
+  return value === null ? "—" : signed(value);
 }
 
 function signed(value: number): string {

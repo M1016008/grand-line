@@ -9,16 +9,19 @@ React, the DOM, AI, or the database.
 ```text
 Rules Kernel
     ↓
-Headless Runner
-    ↓ (future PR)
-Benchmark
-    ↓ (future PR)
-Optimizer
+Headless Runner       ✅
+    ↓
+Battle Benchmark      ✅ Rules Benchmark v2
+    ↓
+Optimizer             pending
+    ↓
+Practice              pending
 ```
 
-This PR adds the runner only. `deck-battle-benchmark.ts`, `deck-optimizer.ts`,
-`practice-training.ts`, and the Practice UI remain on their existing paths until
-a later migration.
+The user-facing Deck Intelligence Battle Benchmark now uses the Rules Headless
+Runner. `deck-battle-benchmark.ts` keeps the legacy heuristic runner temporarily
+for Optimizer compatibility; `deck-optimizer.ts`, `practice-training.ts`, and
+the Practice UI remain on their existing paths until later migrations.
 
 ## Architecture
 
@@ -66,6 +69,12 @@ failure, returns `reason: "engine_guard"`.
 `reason` also distinguishes `leader_damage`, immediate official `deck_out`, and
 future Kernel-driven `effect_win` outcomes.
 
+Rules Benchmark v2 reports `resolvedGames` separately from `inconclusiveGames`.
+Its resolved win rate and Wilson 95% interval use only games where the Kernel
+declared a winner. Turn-limit and engine-guard results never become losses or
+score-based winners. Same-seed paired and pairwise comparisons exclude an
+inconclusive schedule index from resolved win/loss classifications.
+
 ## Coverage and statistics
 
 Each result carries the existing deterministic `DeckEffectCoverage` for both
@@ -74,6 +83,12 @@ counts such as plays, Leader/Character attacks, damage, Blocker and real Counter
 consumption, Trigger decisions, Search, DON!! use, deck-out, and
 supported/partial/unsupported effect encounters. No contribution or
 score-at-limit heuristic is generated.
+
+Each variant exposes Main-deck copy coverage and the Leader status separately.
+`complete` is true only when the Main 50 and Leader are supported, so the UI does
+not present a Main-deck ratio alone as complete reproduction. The shared
+Opponent coverage is compiled once per request alongside one request-wide
+effect registry; each variant receives its own Player coverage environment.
 
 ## Trace modes and batch memory
 
@@ -99,9 +114,9 @@ and unsupported text is counted once when encountered. A supported effect is
 counted only when its Kernel resolution is reached; revealing and then
 activating one Trigger never records two encounters.
 
-## Known v1 boundaries
+## Known boundaries
 
 Coverage remains intentionally conservative. Partial or unsupported effect
-families identified by the existing compiler remain unexecuted. No matchup
-model, tournament data, AI policy, Monte Carlo optimizer, automatic mutation,
-or legacy Benchmark/Optimizer migration is included in v1.
+families identified by the existing compiler remain unexecuted. Rules Benchmark
+v2 is not a tournament or meta win-rate model. Optimizer and Practice still use
+their existing heuristic paths pending their dedicated migrations.
