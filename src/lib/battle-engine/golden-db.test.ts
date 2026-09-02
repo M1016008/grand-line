@@ -23,8 +23,16 @@ const canAuditSsd = Boolean(localPath && existsSync(localPath));
 test(
   "golden fixtures exactly match verified official SSD rows",
   { skip: !canAuditSsd },
-  async () => {
+  async (context) => {
     const client = createClient({ url: `file:${localPath}` });
+    const translationCount = await client.execute(
+      "SELECT COUNT(*) AS count FROM card_translations",
+    );
+    if (Number(translationCount.rows[0]?.count ?? 0) === 0) {
+      client.close();
+      context.skip("ephemeral CI database has no official card corpus");
+      return;
+    }
     const fixtures = [
       GOLDEN_RUSH,
       GOLDEN_BLOCKER,
