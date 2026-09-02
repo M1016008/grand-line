@@ -1,6 +1,12 @@
 import type { CardListItem } from "@/lib/cards";
 import type { EffectAction } from "./effects";
-import { sideOf, withSide, type BattleState, type BattleTargetRef } from "./state";
+import {
+  resolveDeckOut,
+  sideOf,
+  withSide,
+  type BattleState,
+  type BattleTargetRef,
+} from "./state";
 
 export interface AppliedAction {
   state: BattleState;
@@ -12,6 +18,8 @@ export function drawCards(
   owner: "player" | "opponent",
   count: number,
 ): AppliedAction {
+  state = resolveDeckOut(state, owner);
+  if (state.winner) return { state, log: ["→ 0枚ドロー（デッキ0枚）"] };
   let side = sideOf(state, owner);
   const drawn: CardListItem[] = [];
   for (let index = 0; index < count; index++) {
@@ -19,6 +27,9 @@ export function drawCards(
     if (!card) break;
     drawn.push(card);
     side = { ...side, deck, hand: [...side.hand, card] };
+    state = resolveDeckOut(withSide(state, owner, side), owner);
+    side = sideOf(state, owner);
+    if (state.winner) break;
   }
   return {
     state: withSide(state, owner, side),
@@ -76,13 +87,38 @@ export function resolveSearchDeck(
     deck: [...rest, ...remainingLooked],
     hand: [...side.hand, ...chosen.map((entry) => entry.card)],
   };
+  const nextState = resolveDeckOut(withSide(state, owner, nextSide), owner);
   return {
-    state: withSide(state, owner, nextSide),
+    state: nextState,
     log: [
       chosen.length > 0
         ? `→ 上から${action.lookAt}枚を確認し、${chosen.map((entry) => entry.card.name).join("、")}を手札へ`
         : `→ 上から${action.lookAt}枚を確認（手札に加えない）`,
     ],
+  };
+}
+
+export function addDeckCardsToLife(
+  state: BattleState,
+  owner: "player" | "opponent",
+  count: number,
+): AppliedAction {
+  state = resolveDeckOut(state, owner);
+  if (state.winner) return { state, log: ["→ Lifeに0枚追加（デッキ0枚）"] };
+  let side = sideOf(state, owner);
+  let moved = 0;
+  for (let index = 0; index < count; index++) {
+    const [card, ...deck] = side.deck;
+    if (!card) break;
+    side = { ...side, deck, lifeCards: [card, ...side.lifeCards] };
+    moved++;
+    state = resolveDeckOut(withSide(state, owner, side), owner);
+    side = sideOf(state, owner);
+    if (state.winner) break;
+  }
+  return {
+    state: withSide(state, owner, side),
+    log: [`→ Lifeに${moved}枚追加`],
   };
 }
 

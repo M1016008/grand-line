@@ -1,7 +1,13 @@
 import type { CardListItem } from "@/lib/cards";
 import { cpuSkillRank, type CpuSkill } from "@/lib/practice-log";
 import type { PracticeDeck } from "@/lib/practice-sim";
-import { applyTargetedAction, drawCards, resolveSearchDeck, searchChoices } from "./actions";
+import {
+  addDeckCardsToLife,
+  applyTargetedAction,
+  drawCards,
+  resolveSearchDeck,
+  searchChoices,
+} from "./actions";
 import { BattleEffectRegistry } from "./effect-registry";
 import { isTargetedAction, type EffectAction, type EffectTrigger } from "./effects";
 import {
@@ -167,6 +173,7 @@ export function resolveSearchChoice(
     lookedIndex === null ? [] : [lookedIndex],
   );
   let next = appendBattleLog(applied.state, ...applied.log);
+  if (next.winner) return next;
   next = resolveActions(
     next,
     pending.actor,
@@ -317,6 +324,7 @@ function commitLeaderAttack(
   const attack: AttackContext = {
     attacker: actor,
     defender: otherPlayer(actor),
+    attackerIdentity: { kind: "leader", instanceId: `${actor}:leader` },
     attackerName: side.leader.name,
     attackPower: effectiveLeaderPower(rested, actor),
     target,
@@ -349,6 +357,7 @@ function commitCharacterAttack(
   const attack: AttackContext = {
     attacker: actor,
     defender: otherPlayer(actor),
+    attackerIdentity: { kind: "character", instanceId },
     attackerName: zone.card.name,
     attackPower: effectiveCharacterPower(zone),
     target,
@@ -487,13 +496,37 @@ function continueQueuedAttack(
   registry: BattleEffectRegistry,
 ): BattleState {
   if (state.pending || !state.queuedAttack) return state;
-  const attack = state.queuedAttack;
+  const attack = reevaluateAttackPower(state, state.queuedAttack);
+  if (!attack) {
+    return appendBattleLog(
+      { ...state, queuedAttack: undefined },
+      "→ 攻撃元が場を離れたためバトル終了",
+    );
+  }
   return continueAttack(
     { ...state, queuedAttack: undefined },
     attack,
     registry,
     attack.cpuSkill,
   );
+}
+
+function reevaluateAttackPower(
+  state: BattleState,
+  attack: AttackContext,
+): AttackContext | null {
+  if (attack.attackerIdentity.kind === "leader") {
+    return {
+      ...attack,
+      attackPower: effectiveLeaderPower(state, attack.attacker),
+    };
+  }
+  const zone = sideOf(state, attack.attacker).board.find(
+    (item) => item.instanceId === attack.attackerIdentity.instanceId,
+  );
+  return zone
+    ? { ...attack, attackPower: effectiveCharacterPower(zone) }
+    : null;
 }
 
 function continueBattleFlow(
@@ -750,6 +783,7 @@ function resolveActions(
     if (action.type === "draw") {
       const applied = drawCards(next, actor, action.count);
       next = appendBattleLog(applied.state, ...applied.log);
+      if (next.winner) return next;
     } else if (action.type === "search") {
       const choices = searchChoices(next, actor, action);
       if (actor === "player" && (choices.length > 1 || action.optional)) {
@@ -774,11 +808,14 @@ function resolveActions(
         choices[0] ? [choices[0].lookedIndex] : [],
       );
       next = appendBattleLog(applied.state, ...applied.log);
+      if (next.winner) return next;
     } else if (action.type === "play_self" && sourceCard) {
       const placed = addToField(next, actor, sourceCard, action.rested ?? false);
       next = appendBattleLog(placed.state, `→ ${sourceCard.name} をTriggerで登場`);
     } else if (action.type === "add_life") {
-      next = addLife(next, actor, action.count);
+      const applied = addDeckCardsToLife(next, actor, action.count);
+      next = appendBattleLog(applied.state, ...applied.log);
+      if (next.winner) return next;
     } else if (action.type === "take_life") {
       next = takeOwnLife(next, actor, action.count, action.destination);
     }
@@ -844,9 +881,7 @@ function beginTurn(state: BattleState, actor: BattlePlayer, firstTurn: boolean):
   if (!firstTurn) {
     const drawn = drawCards(next, actor, 1);
     next = drawn.state;
-    if (drawn.log[0]?.includes("山札不足")) {
-      return appendBattleLog({ ...next, winner: otherPlayer(actor) }, `${actorLabel(actor)}が山札切れ`);
-    }
+    if (next.winner) return next;
   }
   next = withSide(next, actor, addDon(sideOf(next, actor), firstTurn ? 1 : 2));
   return appendBattleLog(next, `Turn ${state.turn}: ${actorLabel(actor)}のターン`);
@@ -917,18 +952,6 @@ function consumeCpuCounters(
       trash: [...side.trash, ...used.map((item) => item.card)],
     }),
   };
-}
-
-function addLife(state: BattleState, actor: BattlePlayer, count: number): BattleState {
-  let side = sideOf(state, actor);
-  let moved = 0;
-  for (let index = 0; index < count; index++) {
-    const [card, ...deck] = side.deck;
-    if (!card) break;
-    side = { ...side, deck, lifeCards: [card, ...side.lifeCards] };
-    moved++;
-  }
-  return appendBattleLog(withSide(state, actor, side), `→ Lifeに${moved}枚追加`);
 }
 
 function takeOwnLife(

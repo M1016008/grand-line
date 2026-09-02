@@ -93,6 +93,9 @@ export interface PendingDefenseChoice {
 export interface AttackContext {
   attacker: BattlePlayer;
   defender: BattlePlayer;
+  attackerIdentity:
+    | { kind: "leader"; instanceId: string }
+    | { kind: "character"; instanceId: string };
   attackerName: string;
   attackPower: number;
   target: BattleTargetRef;
@@ -166,4 +169,26 @@ export function appendBattleLog(state: BattleState, ...lines: string[]): BattleS
     ...state,
     log: [...state.log, ...lines].slice(-DEFAULT_BATTLE_CONFIG.logLimit),
   };
+}
+
+/**
+ * Comprehensive Rules loss processing: a player loses as soon as their deck
+ * contains zero cards, rather than when a later draw fails.
+ */
+export function resolveDeckOut(
+  state: BattleState,
+  owner: BattlePlayer,
+): BattleState {
+  if (state.winner || sideOf(state, owner).deck.length > 0) return state;
+  const label = owner === "player" ? "あなた" : "CPU";
+  return appendBattleLog(
+    {
+      ...state,
+      winner: otherPlayer(owner),
+      pending: undefined,
+      queuedAttack: undefined,
+      cpuAttackQueue: undefined,
+    },
+    `→ ${label}のデッキが0枚になり敗北`,
+  );
 }

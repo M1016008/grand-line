@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import type { CardListItem } from "@/lib/cards";
 import type { PracticeDeck } from "@/lib/practice-sim";
+import { addDeckCardsToLife } from "./actions";
 import { calculateDeckCoverage } from "./coverage";
 import { BattleEffectRegistry } from "./effect-registry";
 import {
@@ -202,7 +203,7 @@ test("hand counter is consumed to trash and contributes its printed amount", () 
 test("supported Trigger resolves, draws, and sends the event to trash", () => {
   const state = battleState();
   state.opponent.lifeCards = [GOLDEN_TRIGGER_DRAW];
-  state.opponent.deck = [FILLER];
+  state.opponent.deck = [FILLER, FILLER];
   const before = totalCardsInSide(state, "opponent");
   const target = declareLeaderAttack(state, "player", REGISTRY, "level1");
   const next = chooseAttackTarget(target, "opponent:leader", REGISTRY);
@@ -364,8 +365,8 @@ test("normal attack target choice includes Leader and rested Characters only, th
 
 test("CPU Character attack queue resumes after pending defense", () => {
   const state = battleState();
-  state.opponent.deck = [FILLER];
-  state.player.deck = [FILLER];
+  state.opponent.deck = [FILLER, FILLER];
+  state.player.deck = [FILLER, FILLER];
   state.player.lifeCards = [FILLER, FILLER, FILLER];
   state.opponent.board = [zone(HIGH_TARGET, "cpu-attacker", 1)];
   const leaderDefense = endPlayerTurn(state, REGISTRY, "level1");
@@ -390,8 +391,8 @@ test("CPU skips summoning-sick Characters, while Rush can attack on play turn", 
     [zone(GOLDEN_RUSH, "rush", 2), true],
   ] as const) {
     const state = battleState();
-    state.opponent.deck = [FILLER];
-    state.player.deck = [FILLER];
+    state.opponent.deck = [FILLER, FILLER];
+    state.player.deck = [FILLER, FILLER];
     state.player.lifeCards = [FILLER, FILLER, FILLER];
     state.opponent.board = [candidate];
     const first = endPlayerTurn(state, REGISTRY, "level1");
@@ -542,6 +543,202 @@ test("Blocker selection is final and cannot rest a second Blocker", () => {
   assert.equal(second.player.board.find((item) => item.instanceId === "blocker-a")?.rested, true);
   assert.equal(second.player.board.find((item) => item.instanceId === "blocker-b")?.rested, false);
   assert.equal(second.pending?.type === "defense" ? second.pending.selectedBlocker?.instanceId : undefined, "blocker-a");
+});
+
+test("Character OnAttack self buff is reevaluated for the current battle", () => {
+  const selfBuff = card({
+    id: "TEST-SELF-BUFF",
+    name: "自己強化キャラ",
+    power: 5_000,
+    mechanics: ["OnAttack", "PowerBuff"],
+    effectText: "[アタック時]自分のキャラ1枚までを、このターン中、パワー+2000。",
+  });
+  const registry = new BattleEffectRegistry([selfBuff, GOLDEN_LEADER, FILLER]);
+  const state = battleState();
+  state.activePlayer = "opponent";
+  state.opponent.board = [zone(selfBuff, "self-buff", 1)];
+  const pending = declareCharacterAttack(
+    state,
+    "opponent",
+    "self-buff",
+    registry,
+    "level1",
+  );
+  assert.equal(pending.pending?.type, "defense");
+  assert.equal(
+    pending.pending?.type === "defense" ? pending.pending.attackPower : undefined,
+    7_000,
+  );
+});
+
+test("Leader OnAttack self buff is reevaluated for the current battle", () => {
+  const leader = card({
+    id: "TEST-L-SELF-BUFF",
+    name: "自己強化リーダー",
+    cardType: "LEADER",
+    cost: null,
+    life: 5,
+    power: 5_000,
+    mechanics: ["OnAttack", "PowerBuff"],
+    effectText: "[アタック時]自分のリーダーかキャラ1枚までを、このターン中、パワー+2000。",
+  });
+  const registry = new BattleEffectRegistry([leader, FILLER]);
+  const state = battleState();
+  state.activePlayer = "opponent";
+  state.opponent.leader = leader;
+  const pending = declareLeaderAttack(state, "opponent", registry, "level1");
+  assert.equal(pending.pending?.type, "defense");
+  assert.equal(
+    pending.pending?.type === "defense" ? pending.pending.attackPower : undefined,
+    7_000,
+  );
+});
+
+test("OnAttack reevaluation includes attached DON and existing Character modifiers", () => {
+  const selfBuff = card({
+    id: "TEST-SELF-BUFF-DON",
+    name: "DON込み自己強化",
+    power: 5_000,
+    mechanics: ["OnAttack", "PowerBuff"],
+    effectText: "[アタック時]自分のキャラ1枚までを、このターン中、パワー+2000。",
+  });
+  const registry = new BattleEffectRegistry([selfBuff, GOLDEN_LEADER, FILLER]);
+  const state = battleState();
+  state.activePlayer = "opponent";
+  state.opponent.board = [
+    { ...zone(selfBuff, "buffed-with-don", 1), attachedDon: 1, powerModifier: 1_000 },
+  ];
+  const pending = declareCharacterAttack(
+    state,
+    "opponent",
+    "buffed-with-don",
+    registry,
+    "level1",
+  );
+  assert.equal(
+    pending.pending?.type === "defense" ? pending.pending.attackPower : undefined,
+    9_000,
+  );
+});
+
+test("Player target choices still reevaluate attack power and opponent reductions do not change attacker power", () => {
+  const selfBuff = card({
+    id: "TEST-CHOICE-BUFF",
+    name: "選択自己強化",
+    power: 5_000,
+    mechanics: ["OnAttack", "PowerBuff"],
+    effectText: "[アタック時]自分のキャラ1枚までを、このターン中、パワー+2000。",
+  });
+  const registry = new BattleEffectRegistry([
+    selfBuff,
+    GOLDEN_ON_ATTACK,
+    GOLDEN_LEADER,
+    HIGH_TARGET,
+    FILLER,
+  ]);
+  const buffState = battleState();
+  buffState.player.board = [zone(selfBuff, "choice-buff", 1)];
+  buffState.opponent.leader = { ...GOLDEN_LEADER, power: 8_000 };
+  const attackChoice = declareCharacterAttack(
+    buffState,
+    "player",
+    "choice-buff",
+    registry,
+    "level1",
+  );
+  const effectChoice = chooseAttackTarget(attackChoice, "opponent:leader", registry);
+  const resolvedBuff = chooseEffectTarget(effectChoice, "choice-buff", registry);
+  assert.match(resolvedBuff.log.join("\n"), /7000 対 8000/);
+
+  const reductionState = battleState();
+  reductionState.player.board = [zone(GOLDEN_ON_ATTACK, "reduction-attacker", 1)];
+  reductionState.opponent.board = [zone(HIGH_TARGET, "reduction-target")];
+  reductionState.opponent.leader = { ...GOLDEN_LEADER, power: 6_000 };
+  const reductionAttack = declareCharacterAttack(
+    reductionState,
+    "player",
+    "reduction-attacker",
+    registry,
+    "level1",
+  );
+  const reductionEffect = chooseAttackTarget(
+    reductionAttack,
+    "opponent:leader",
+    registry,
+  );
+  const resolvedReduction = chooseEffectTarget(
+    reductionEffect,
+    "reduction-target",
+    registry,
+  );
+  assert.equal(resolvedReduction.opponent.board[0]?.powerModifier, -2_000);
+  assert.match(resolvedReduction.log.join("\n"), /5000 対 6000/);
+});
+
+test("turn draw from the final deck card causes immediate defeat and stops the CPU attack queue", () => {
+  const state = battleState();
+  state.opponent.deck = [FILLER];
+  state.opponent.board = [zone(HIGH_TARGET, "would-attack", 1)];
+  const next = endPlayerTurn(state, REGISTRY, "level1");
+  assert.equal(next.winner, "player");
+  assert.equal(next.opponent.deck.length, 0);
+  assert.equal(next.opponent.leaderRested, false);
+  assert.equal(next.opponent.board[0]?.rested, false);
+  assert.equal(next.pending, undefined);
+  assert.equal(next.cpuAttackQueue, undefined);
+});
+
+test("OnPlay Draw from the final deck card causes immediate defeat", () => {
+  const state = battleState();
+  state.player.hand = [GOLDEN_DRAW];
+  state.player.deck = [FILLER];
+  const next = playCard(state, "player", 0, REGISTRY);
+  assert.equal(next.winner, "opponent");
+  assert.equal(next.player.deck.length, 0);
+});
+
+test("Trigger Draw from the final deck card causes immediate defeat", () => {
+  const state = battleState();
+  state.activePlayer = "opponent";
+  state.player.lifeCards = [GOLDEN_TRIGGER_DRAW];
+  state.player.deck = [FILLER];
+  const defense = declareLeaderAttack(state, "opponent", REGISTRY, "level1");
+  const trigger = acceptAttack(defense, REGISTRY);
+  assert.equal(trigger.pending?.type, "trigger");
+  const next = resolveTriggerChoice(trigger, true, REGISTRY);
+  assert.equal(next.winner, "opponent");
+  assert.equal(next.player.deck.length, 0);
+});
+
+test("Search taking the final deck card causes immediate defeat", () => {
+  const state = battleState();
+  state.player.hand = [GOLDEN_SEARCH];
+  state.player.deck = [SEARCH_HIT];
+  const pending = playCard(state, "player", 0, REGISTRY);
+  assert.equal(pending.pending?.type, "search");
+  const next = resolveSearchChoice(pending, 0, REGISTRY);
+  assert.equal(next.winner, "opponent");
+  assert.equal(next.player.deck.length, 0);
+  assert.equal(next.pending, undefined);
+  assert.equal(next.queuedAttack, undefined);
+});
+
+test("effect draw leaving one card does not cause deck-out defeat", () => {
+  const state = battleState();
+  state.player.hand = [GOLDEN_DRAW];
+  state.player.deck = [FILLER, FILLER];
+  const next = playCard(state, "player", 0, REGISTRY);
+  assert.equal(next.player.deck.length, 1);
+  assert.equal(next.winner, undefined);
+});
+
+test("deck-to-Life from the final card uses the same immediate deck-out rule", () => {
+  const state = battleState();
+  state.player.deck = [FILLER];
+  const next = addDeckCardsToLife(state, "player", 1).state;
+  assert.equal(next.player.lifeCards.at(0)?.id, FILLER.id);
+  assert.equal(next.player.deck.length, 0);
+  assert.equal(next.winner, "opponent");
 });
 
 function battleState(): BattleState {
