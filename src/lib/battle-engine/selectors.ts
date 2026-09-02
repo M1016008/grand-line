@@ -172,6 +172,7 @@ export function totalCardsInSide(state: BattleState, owner: BattlePlayer): numbe
     side.lifeCards.length +
     side.board.length +
     (side.stage ? 1 : 0) +
-    side.trash.length
+    side.trash.length +
+    (state.pending?.type === "trigger" && state.pending.defender === owner ? 1 : 0)
   );
 }

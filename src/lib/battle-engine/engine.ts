@@ -23,6 +23,7 @@ import {
   DEFAULT_BATTLE_CONFIG,
   appendBattleLog,
   otherPlayer,
+  personalTurnsTaken,
   sideOf,
   withSide,
   type AttackContext,
@@ -31,24 +32,36 @@ import {
   type BattleState,
   type BattleTargetRef,
   type BattleZoneCard,
+  type BattleChoiceMode,
 } from "./state";
+
+export interface CreateBattleStateOptions {
+  firstPlayer?: BattlePlayer;
+  choiceMode?: BattleChoiceMode;
+  logLimit?: number;
+}
 
 export function createBattleState(
   playerDeck: PracticeDeck,
   opponentDeck: PracticeDeck,
   seed: number,
+  options: CreateBattleStateOptions = {},
 ): BattleState {
-  const rng = mulberry32(seed);
+  const firstPlayer = options.firstPlayer ?? "player";
   const state: BattleState = {
     seed,
     turn: 1,
-    activePlayer: "player",
-    player: setupSide(playerDeck, rng),
-    opponent: setupSide(opponentDeck, rng),
+    activePlayer: firstPlayer,
+    firstPlayer,
+    turnsTaken: { player: 0, opponent: 0 },
+    choiceMode: options.choiceMode ?? "interactive",
+    logLimit: options.logLimit,
+    player: setupSide(playerDeck, seededRandom(seed, "player")),
+    opponent: setupSide(opponentDeck, seededRandom(seed, "opponent")),
     log: [],
     sequence: 0,
   };
-  return beginTurn(state, "player", true);
+  return beginTurn(state, firstPlayer);
 }
 
 export function playCard(
@@ -159,7 +172,13 @@ export function resolveSearchChoice(
 ): BattleState {
   if (state.pending?.type !== "search") return state;
   const pending = state.pending;
-  if (lookedIndex === null && !pending.action.optional) return state;
+  if (
+    lookedIndex === null &&
+    !pending.action.optional &&
+    pending.legalChoices.length > 0
+  ) {
+    return state;
+  }
   if (
     lookedIndex !== null &&
     !pending.legalChoices.some((entry) => entry.lookedIndex === lookedIndex)
@@ -226,13 +245,18 @@ export function declareLeaderAttack(
   registry: BattleEffectRegistry,
   cpuSkill: CpuSkill,
 ): BattleState {
-  if (state.winner || state.pending || state.activePlayer !== actor || state.turn === 1) {
+  if (
+    state.winner ||
+    state.pending ||
+    state.activePlayer !== actor ||
+    personalTurnsTaken(state, actor) <= 1
+  ) {
     return state;
   }
   const side = sideOf(state, actor);
   if (side.leaderRested) return state;
   const targets = legalAttackTargets(state, actor);
-  if (actor === "player") {
+  if (state.choiceMode === "deferred" || actor === "player") {
     return {
       ...state,
       pending: {
@@ -260,7 +284,12 @@ export function declareCharacterAttack(
   registry: BattleEffectRegistry,
   cpuSkill: CpuSkill,
 ): BattleState {
-  if (state.winner || state.pending || state.activePlayer !== actor || state.turn === 1) {
+  if (
+    state.winner ||
+    state.pending ||
+    state.activePlayer !== actor ||
+    personalTurnsTaken(state, actor) <= 1
+  ) {
     return state;
   }
   const side = sideOf(state, actor);
@@ -270,7 +299,7 @@ export function declareCharacterAttack(
     return appendBattleLog(state, `${zone.card.name} は登場ターン中のため攻撃できません。`);
   }
   const targets = legalAttackTargets(state, actor);
-  if (actor === "player") {
+  if (state.choiceMode === "deferred" || actor === "player") {
     return {
       ...state,
       pending: {
@@ -448,7 +477,7 @@ export function endPlayerTurn(
   cpuSkill: CpuSkill,
 ): BattleState {
   if (state.winner || state.pending || state.activePlayer !== "player") return state;
-  let next = beginTurn({ ...state, activePlayer: "opponent" }, "opponent", false);
+  let next = endBattleTurn(state, "player");
   if (next.winner) return next;
   next = runCpuMain(next, registry, cpuSkill);
   if (next.winner || next.pending) return next;
@@ -461,6 +490,21 @@ export function endPlayerTurn(
   ];
   next = { ...next, cpuAttackQueue: { cpuSkill, attacks } };
   return continueBattleFlow(next, registry);
+}
+
+/**
+ * Rules-only turn transition used by the headless runner. It never chooses a
+ * card or target; callers must finish every pending choice before advancing.
+ */
+export function endBattleTurn(
+  state: BattleState,
+  actor: BattlePlayer,
+): BattleState {
+  if (state.winner || state.pending || state.activePlayer !== actor) return state;
+  const firstPlayer = state.firstPlayer ?? "player";
+  const nextActor = otherPlayer(actor);
+  const nextRound = actor === firstPlayer ? state.turn : state.turn + 1;
+  return beginTurn({ ...state, turn: nextRound }, nextActor);
 }
 
 function runCpuMain(
@@ -544,7 +588,7 @@ function continueBattleFlow(
   if (!entry) {
     const { cpuAttackQueue: _queue, ...withoutQueue } = state;
     void _queue;
-    return beginTurn({ ...withoutQueue, turn: state.turn + 1 }, "player", false);
+    return endBattleTurn(withoutQueue, "opponent");
   }
   let next: BattleState = {
     ...state,
@@ -570,7 +614,7 @@ function continueAttack(
   cpuSkill: CpuSkill,
 ): BattleState {
   const blockers = blockerTargets(state, attack.defender, (cardId) => registry.isBlocker(cardId));
-  if (attack.defender === "player") {
+  if (state.choiceMode === "deferred" || attack.defender === "player") {
     return {
       ...state,
       pending: {
@@ -676,7 +720,7 @@ function dealLifeDamage(
         : "→ Triggerなし、手札へ",
     );
   }
-  if (defender === "player") {
+  if (state.choiceMode === "deferred" || defender === "player") {
     return {
       ...next,
       pending: { type: "trigger", defender, revealedCard: revealed, effect },
@@ -756,7 +800,7 @@ function resolveActions(
         next = appendBattleLog(next, "→ 合法対象なし");
         continue;
       }
-      if (actor === "player") {
+      if (next.choiceMode === "deferred" || actor === "player") {
         return {
           ...next,
           pending: {
@@ -786,7 +830,10 @@ function resolveActions(
       if (next.winner) return next;
     } else if (action.type === "search") {
       const choices = searchChoices(next, actor, action);
-      if (actor === "player" && (choices.length > 1 || action.optional)) {
+      if (
+        next.choiceMode === "deferred" ||
+        (actor === "player" && (choices.length > 1 || action.optional))
+      ) {
         return {
           ...next,
           pending: {
@@ -874,16 +921,24 @@ function addToField(
   };
 }
 
-function beginTurn(state: BattleState, actor: BattlePlayer, firstTurn: boolean): BattleState {
+function beginTurn(state: BattleState, actor: BattlePlayer): BattleState {
   let next = clearOutgoingTurnState(state, otherPlayer(actor));
   next = withSide(next, actor, refreshSide(sideOf(next, actor)));
-  next = { ...next, activePlayer: actor };
-  if (!firstTurn) {
+  const turnsTaken = {
+    player: next.turnsTaken?.player ?? (actor === "player" ? Math.max(0, state.turn - 1) : state.turn),
+    opponent:
+      next.turnsTaken?.opponent ?? (actor === "opponent" ? Math.max(0, state.turn - 1) : state.turn),
+  };
+  turnsTaken[actor] += 1;
+  next = { ...next, activePlayer: actor, turnsTaken };
+  const openingTurn =
+    actor === (next.firstPlayer ?? "player") && turnsTaken[actor] === 1;
+  if (!openingTurn) {
     const drawn = drawCards(next, actor, 1);
     next = drawn.state;
     if (next.winner) return next;
   }
-  next = withSide(next, actor, addDon(sideOf(next, actor), firstTurn ? 1 : 2));
+  next = withSide(next, actor, addDon(sideOf(next, actor), openingTurn ? 1 : 2));
   return appendBattleLog(next, `Turn ${state.turn}: ${actorLabel(actor)}のターン`);
 }
 
@@ -1099,8 +1154,16 @@ function shuffle<T>(items: T[], rng: () => number): void {
   }
 }
 
-function mulberry32(seed: number): () => number {
-  let value = seed >>> 0;
+export function seededRandom(
+  seed: number,
+  stream: BattlePlayer | string,
+): () => number {
+  let streamHash = 2_166_136_261;
+  for (let index = 0; index < stream.length; index++) {
+    streamHash ^= stream.charCodeAt(index);
+    streamHash = Math.imul(streamHash, 16_777_619);
+  }
+  let value = (seed ^ streamHash) >>> 0;
   return () => {
     value += 0x6d2b79f5;
     let result = Math.imul(value ^ (value >>> 15), 1 | value);
