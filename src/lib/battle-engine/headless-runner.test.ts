@@ -393,9 +393,11 @@ test("trace modes avoid full event retention unless explicitly requested", () =>
   };
   const none = runHeadlessBattle({ ...common, traceMode: "none" });
   const summary = runHeadlessBattle({ ...common, traceMode: "summary" });
+  const compact = runHeadlessBattle({ ...common, traceMode: "compact" });
   const full = runHeadlessBattle({ ...common, traceMode: "full" });
   assert.equal(none.trace, undefined);
   assert.ok((summary.trace?.length ?? 0) > 0);
+  assert.equal(compact.trace?.length, full.trace?.length);
   assert.ok((full.trace?.length ?? 0) > (summary.trace?.length ?? 0));
   assert.equal(
     summary.trace?.every((event) =>
@@ -405,6 +407,8 @@ test("trace modes avoid full event retention unless explicitly requested", () =>
     ),
     true,
   );
+  assert.equal(compact.trace?.every((event) => event.state === undefined), true);
+  assert.equal(full.trace?.every((event) => event.state !== undefined), true);
 });
 
 test("every completed headless transition conserves all card zones", () => {

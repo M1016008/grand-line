@@ -330,6 +330,8 @@ export function DeckBattleBenchmark({
           pool={pool}
           variantCards={variantCards}
           opponent={result.benchmark.opponent}
+          baseSeed={result.benchmark.schedule.baseSeed}
+          seedStep={result.benchmark.schedule.seedStep}
           cpuSkill={result.benchmark.schedule.cpuSkill}
           maxTurns={result.benchmark.schedule.maxTurns}
           current={currentStep === 4}

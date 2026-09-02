@@ -106,13 +106,23 @@ test("Deck Optimizer UI is explicit, paired, and manual-apply only", async () =>
   assert.match(component, /改善候補を探す/);
   assert.match(component, /この入替を下書きに反映/);
   assert.match(component, /反映した下書きで再ベンチマーク/);
-  assert.match(component, /増加/);
-  assert.match(component, /減少/);
   assert.match(component, /候補 95% CI/);
   assert.match(component, /構築変化/);
-  assert.match(domain, /公式環境での強さや大会勝率の改善を保証/);
-  assert.doesNotMatch(component, /最強|真の最適解|大会勝率最大化|Best/);
-  assert.match(route, /listCards\(\{ pageSize: 5_000 \}\)/);
+  assert.match(component, /Rules Kernel Optimizer v2|optimizerLabel/);
+  assert.match(component, /決着試合勝率/);
+  assert.match(component, /決着率/);
+  assert.match(component, /Rules stats/);
+  assert.match(component, /coverage/);
+  assert.match(component, /Baseline observation/);
+  assert.match(domain, /大会環境での強さ・勝率・最適構築を保証/);
+  assert.doesNotMatch(
+    component,
+    /最強|真の最適解|大会勝率最大化|Best|heuristicWinRate|Practice engine|DON効率|Mulligan keep \/ redraw|topContributors|主な寄与カード/,
+  );
+  assert.match(
+    route,
+    /listCards\(\{ pageSize: 5_000, includeOfficialText: true \}\)/,
+  );
   assert.match(route, /activeRegulations\(\)/);
   assert.match(route, /getSavedDeck/);
   assert.match(route, /readAiSynergiesForLeader/);
@@ -187,9 +197,9 @@ test("optimizer candidate emphasizes a thumbnail OUT to IN swap and visible appl
   assert.match(component, /label="OUT"/);
   assert.match(component, /label="IN"/);
   assert.match(component, /→/);
-  assert.match(component, /勝利数の純増減/);
-  assert.match(component, /baselineMetrics\.heuristicWinRate/);
-  assert.match(component, /candidateMetrics\.heuristicWinRate/);
+  assert.match(component, /同一seed・両方決着の純勝差/);
+  assert.match(component, /baselineMetrics\.resolvedWinRate/);
+  assert.match(component, /candidateMetrics\.resolvedWinRate/);
   assert.match(component, /下書きに反映済み/);
   assert.match(component, /aria-expanded=\{expanded\}/);
   assert.equal(component.match(/\{OPTIMIZER_DISCLAIMER_JA\}/g)?.length, 1);
@@ -249,14 +259,25 @@ test("the same benchmark condition snapshot is passed through to optimizer", asy
     benchmarkComponent,
     /maxTurns=\{result\.benchmark\.schedule\.maxTurns\}/,
   );
-  assert.match(optimizerComponent, /opponent,[\s\S]*cpuSkill,[\s\S]*maxTurns,/);
+  assert.match(
+    benchmarkComponent,
+    /baseSeed=\{result\.benchmark\.schedule\.baseSeed\}/,
+  );
+  assert.match(
+    benchmarkComponent,
+    /seedStep=\{result\.benchmark\.schedule\.seedStep\}/,
+  );
+  assert.match(
+    optimizerComponent,
+    /opponent,[\s\S]*baseSeed,[\s\S]*seedStep,[\s\S]*cpuSkill,[\s\S]*maxTurns,/,
+  );
   assert.match(
     route,
-    /cpuSkill: body\.cpuSkill,[\s\S]*maxTurns: body\.maxTurns/,
+    /baseSeed: body\.baseSeed,[\s\S]*seedStep: body\.seedStep,[\s\S]*cpuSkill: body\.cpuSkill,[\s\S]*maxTurns: body\.maxTurns/,
   );
 });
 
-test("legacy heuristic benchmark remains isolated for the pending Optimizer migration", async () => {
+test("Optimizer is migrated to the Rules schedule runner while legacy code stays isolated", async () => {
   const legacy = await source("src", "lib", "deck-battle-benchmark.ts");
   const rules = await source("src", "lib", "deck-rules-benchmark.ts");
   const optimizer = await source("src", "lib", "deck-optimizer.ts");
@@ -269,10 +290,12 @@ test("legacy heuristic benchmark remains isolated for the pending Optimizer migr
     "route.ts",
   );
 
-  assert.match(legacy, /Legacy heuristic runner retained temporarily for Optimizer migration/);
+  assert.match(legacy, /Legacy heuristic runner retained for Practice-era regressions/);
   assert.match(legacy, /runDeckOnBenchmarkSchedule/);
   assert.match(legacy, /BenchmarkDeckMetrics/);
-  assert.match(optimizer, /runDeckOnBenchmarkSchedule/);
+  assert.match(optimizer, /runRulesDeckOnBenchmarkSchedule/);
+  assert.match(optimizer, /runHeadlessBattle/);
+  assert.doesNotMatch(optimizer, /runDeckOnBenchmarkSchedule|simulateMatch/);
   assert.match(rules, /runHeadlessBattle/);
   assert.doesNotMatch(route, /runDeckOnBenchmarkSchedule|simulateMatch/);
 });
