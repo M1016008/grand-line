@@ -4,6 +4,7 @@ import type { EffectAction, TriggeredEffect } from "./effects";
 
 export type BattlePlayer = "player" | "opponent";
 export type BattleWinner = BattlePlayer;
+export type BattleChoiceMode = "interactive" | "deferred";
 
 export interface BattleZoneCard {
   instanceId: string;
@@ -128,6 +129,14 @@ export interface BattleState {
   seed: number;
   turn: number;
   activePlayer: BattlePlayer;
+  /** Defaults to player for legacy interactive states. */
+  firstPlayer?: BattlePlayer;
+  /** Personal turns begun by each side. Headless games always populate this. */
+  turnsTaken?: Record<BattlePlayer, number>;
+  /** Interactive preserves Player prompts; deferred exposes every choice to a policy. */
+  choiceMode?: BattleChoiceMode;
+  /** A zero limit disables human-readable logs for high-volume headless runs. */
+  logLimit?: number;
   player: BattleSide;
   opponent: BattleSide;
   log: string[];
@@ -165,10 +174,19 @@ export function withSide(
 }
 
 export function appendBattleLog(state: BattleState, ...lines: string[]): BattleState {
+  const limit = state.logLimit ?? DEFAULT_BATTLE_CONFIG.logLimit;
+  if (limit <= 0 || lines.length === 0) return state;
   return {
     ...state,
-    log: [...state.log, ...lines].slice(-DEFAULT_BATTLE_CONFIG.logLimit),
+    log: [...state.log, ...lines].slice(-limit),
   };
+}
+
+export function personalTurnsTaken(
+  state: BattleState,
+  player: BattlePlayer,
+): number {
+  return state.turnsTaken?.[player] ?? state.turn;
 }
 
 /**
