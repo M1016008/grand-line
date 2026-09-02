@@ -46,6 +46,10 @@ export interface CardListItem {
    * without doing per-card detail fetches.
    */
   mechanics: string[];
+  /** Verified official rules text when available. Battle rules must not use
+   * AI/manual text; consumers still need to check source + verified. */
+  effectText?: string | null;
+  triggerText?: string | null;
   source: CardTranslationSource;
   verified: boolean;
 }
@@ -96,6 +100,9 @@ export interface CardListFilters {
   /** 1-based page number. */
   page?: number;
   pageSize?: number;
+  /** Include verified official rules text in list rows. Keep this opt-in so
+   * catalogue pages do not serialize the full rules corpus to the client. */
+  includeOfficialText?: boolean;
 }
 
 /* ──────────────────────────────────────────────────────────────────────── */
@@ -252,6 +259,8 @@ async function listFromDb(filters: CardListFilters): Promise<CardListResult> {
     hasTrigger: cards.hasTrigger,
     imageUrlJp: cards.imageUrlJp,
     name: cardTranslations.name,
+    effectText: cardTranslations.effectText,
+    triggerText: cardTranslations.triggerText,
     source: cardTranslations.source,
     verified: cardTranslations.verified,
   };
@@ -290,6 +299,8 @@ async function listFromDb(filters: CardListFilters): Promise<CardListResult> {
     hasTrigger: boolean;
     imageUrlJp: string | null;
     name: string | null;
+    effectText: string | null;
+    triggerText: string | null;
     source: CardTranslationSource | null;
     verified: boolean | null;
   }>;
@@ -362,6 +373,18 @@ async function listFromDb(filters: CardListFilters): Promise<CardListResult> {
       rarity: r.rarity,
       hasTrigger: r.hasTrigger,
       imageUrlJp: r.imageUrlJp,
+      effectText:
+        filters.includeOfficialText &&
+        r.verified &&
+        (r.source === "official_jp" || r.source === "official_en")
+          ? r.effectText
+          : null,
+      triggerText:
+        filters.includeOfficialText &&
+        r.verified &&
+        (r.source === "official_jp" || r.source === "official_en")
+          ? r.triggerText
+          : null,
       source: (r.source ?? "manual") as CardTranslationSource,
       verified: Boolean(r.verified),
     })),
