@@ -14,7 +14,7 @@ test("Deck Intelligence compare exposes the paired Battle Benchmark flow", async
     "grand-line",
     "deck-battle-benchmark.tsx",
   );
-  const domain = await source("src", "lib", "deck-battle-benchmark.ts");
+  const domain = await source("src", "lib", "deck-rules-benchmark.ts");
   assert.match(component, /title="対戦ベンチマーク"/);
   assert.match(component, /3案を同条件で対戦比較/);
   assert.match(component, />対戦相手</);
@@ -23,12 +23,17 @@ test("Deck Intelligence compare exposes the paired Battle Benchmark flow", async
   assert.match(component, /比較を実行/);
   assert.match(component, /Synthetic benchmark opponent/);
   assert.match(component, /active restrictionsで再検証/);
-  assert.match(component, /試行上の勝率/);
+  assert.match(component, /決着試合勝率/);
+  assert.match(component, /未決着/);
+  assert.match(component, /決着率/);
+  assert.match(component, /効果再現/);
   assert.match(component, /95% CI/);
   assert.match(component, /詳しい比較/);
   assert.match(component, /同一seedでの結果/);
   assert.match(component, /benchmark\.disclosureJa/);
-  assert.match(domain, /公式カード効果・裁定を完全再現した実戦勝率ではありません/);
+  assert.match(domain, /Grand Line Rules Kernel/);
+  assert.match(domain, /partial \/ unsupported効果は推測実行していません/);
+  assert.doesNotMatch(component, /Heuristic win rate|Practice engine|DON効率/);
   assert.doesNotMatch(component, /Expected tournament win rate|最強構築/);
 });
 
@@ -50,8 +55,13 @@ test("benchmark route resolves facts once and revalidates saved opponents", asyn
     "route.ts",
   );
   const resolver = await source("src", "lib", "benchmark-opponent.ts");
-  assert.equal(route.match(/listCards\(\{ pageSize: 5_000 \}\)/g)?.length, 1);
-  assert.equal(route.match(/runPairedDeckBenchmark\(/g)?.length, 1);
+  assert.equal(
+    route.match(/listCards\(\{ pageSize: 5_000, includeOfficialText: true \}\)/g)
+      ?.length,
+    1,
+  );
+  assert.equal(route.match(/runRulesDeckBenchmark\(/g)?.length, 1);
+  assert.doesNotMatch(route, /runPairedDeckBenchmark|simulateMatch|effectText/);
   assert.match(route, /activeRegulations\(\)/);
   assert.match(route, /getSavedDeck/);
   assert.match(route, /resolveBenchmarkOpponent/);
@@ -117,12 +127,17 @@ test("benchmark keeps primary metrics compact and advanced analysis collapsible"
     "grand-line",
     "deck-battle-benchmark.tsx",
   );
-  assert.match(component, /heuristicWinRate/);
-  assert.match(component, /heuristicWinRateCi95/);
-  assert.match(component, /firstPlayerWinRate/);
-  assert.match(component, /secondPlayerWinRate/);
-  assert.match(component, /avgTurns/);
-  assert.match(component, /averageDonEfficiency/);
+  assert.match(component, /resolvedWinRate/);
+  assert.match(component, /resolvedWinRateCi95/);
+  assert.match(component, /firstPlayer\.resolvedWinRate/);
+  assert.match(component, /secondPlayer\.resolvedWinRate/);
+  assert.match(component, /averageResolvedTurns/);
+  assert.match(component, /effectCoverage/);
+  assert.match(component, /rulesStats/);
+  assert.doesNotMatch(
+    component,
+    /heuristicWinRate|Practice engine|DON効率|Mulligan keep \/ redraw|topContributors|主な寄与カード/,
+  );
   assert.match(component, /aria-expanded=\{showDetails\}/);
   assert.match(component, /benchmark-detailed-comparison/);
   assert.equal(component.match(/benchmark\.disclosureJa/g)?.length, 1);
@@ -239,4 +254,25 @@ test("the same benchmark condition snapshot is passed through to optimizer", asy
     route,
     /cpuSkill: body\.cpuSkill,[\s\S]*maxTurns: body\.maxTurns/,
   );
+});
+
+test("legacy heuristic benchmark remains isolated for the pending Optimizer migration", async () => {
+  const legacy = await source("src", "lib", "deck-battle-benchmark.ts");
+  const rules = await source("src", "lib", "deck-rules-benchmark.ts");
+  const optimizer = await source("src", "lib", "deck-optimizer.ts");
+  const route = await source(
+    "src",
+    "app",
+    "api",
+    "practice",
+    "benchmark",
+    "route.ts",
+  );
+
+  assert.match(legacy, /Legacy heuristic runner retained temporarily for Optimizer migration/);
+  assert.match(legacy, /runDeckOnBenchmarkSchedule/);
+  assert.match(legacy, /BenchmarkDeckMetrics/);
+  assert.match(optimizer, /runDeckOnBenchmarkSchedule/);
+  assert.match(rules, /runHeadlessBattle/);
+  assert.doesNotMatch(route, /runDeckOnBenchmarkSchedule|simulateMatch/);
 });
