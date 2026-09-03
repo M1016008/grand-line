@@ -16,7 +16,11 @@ import {
 } from "@/lib/deck-intelligence-preferences";
 import type { CpuSkill } from "@/lib/practice-log";
 import { createAutoBattlePolicy } from "@/lib/battle-engine/auto-policy";
-import type { BattleTraceEvent, RulesBattleStats } from "@/lib/battle-engine/battle-trace";
+import type {
+  BattleTraceEvent,
+  BattleTraceMode,
+  RulesBattleStats,
+} from "@/lib/battle-engine/battle-trace";
 import { calculateDeckCoverage, type DeckEffectCoverage } from "@/lib/battle-engine/coverage";
 import { BattleEffectRegistry } from "@/lib/battle-engine/effect-registry";
 import {
@@ -149,9 +153,20 @@ export interface RulesBenchmarkDependencies {
   buildRegistry: (cards: CardListItem[]) => BattleEffectRegistry;
 }
 
-interface ScheduledRulesResult {
+export interface ScheduledRulesResult {
   metrics: RulesBenchmarkDeckMetrics;
   outcomes: RulesScheduledOutcome[];
+}
+
+export interface RulesDeckScheduleRunOptions {
+  deck: PracticeDeck;
+  opponentDeck: PracticeDeck;
+  cards: CardListItem[];
+  schedule: BenchmarkScheduleEntry[];
+  environment: HeadlessBattleEnvironment;
+  replaySampleSize?: number;
+  traceMode?: BattleTraceMode;
+  onResult?: (result: HeadlessBattleResult) => void;
 }
 
 const DEFAULT_DEPENDENCIES: RulesBenchmarkDependencies = {
@@ -182,15 +197,14 @@ export function runRulesDeckBenchmark(
       playerCoverage,
       opponentCoverage,
     });
-    const scheduled = runRulesDeckOnSchedule(
+    const scheduled = runRulesDeckOnBenchmarkSchedule(
       {
         deck,
         opponentDeck: options.opponentDeck,
         cards: options.cards,
         schedule,
         environment,
-        replaySampleSize:
-          options.replaySampleSize ?? BENCHMARK_REPLAY_SAMPLE_SIZE,
+        replaySampleSize: options.replaySampleSize ?? BENCHMARK_REPLAY_SAMPLE_SIZE,
       },
       dependencies.run,
     );
@@ -404,19 +418,13 @@ export function computeRulesRelativeMetrics(
   });
 }
 
-function runRulesDeckOnSchedule(
-  options: {
-    deck: PracticeDeck;
-    opponentDeck: PracticeDeck;
-    cards: CardListItem[];
-    schedule: BenchmarkScheduleEntry[];
-    environment: HeadlessBattleEnvironment;
-    replaySampleSize: number;
-  },
-  run: typeof runHeadlessBattle,
+export function runRulesDeckOnBenchmarkSchedule(
+  options: RulesDeckScheduleRunOptions,
+  run: typeof runHeadlessBattle = runHeadlessBattle,
 ): ScheduledRulesResult {
-  const results = options.schedule.map((scheduled) =>
-    run({
+  const results: HeadlessBattleResult[] = [];
+  for (const scheduled of options.schedule) {
+    const result = run({
       playerDeck: options.deck,
       opponentDeck: options.opponentDeck,
       cards: options.cards,
@@ -425,12 +433,15 @@ function runRulesDeckOnSchedule(
       playerPolicy: createAutoBattlePolicy("level4"),
       opponentSkill: scheduled.cpuSkill,
       maxTurns: scheduled.maxTurns,
-      traceMode: "none",
+      traceMode: options.traceMode ?? "none",
       environment: options.environment,
-    }),
-  );
-  const traceSamples = options.replaySampleSize > 0
-    ? options.schedule.slice(0, Math.min(1, options.replaySampleSize)).map((scheduled) =>
+    });
+    options.onResult?.(result);
+    results.push(result.trace ? { ...result, trace: undefined } : result);
+  }
+  const replaySampleSize = options.replaySampleSize ?? 0;
+  const traceSamples = replaySampleSize > 0
+    ? options.schedule.slice(0, Math.min(1, replaySampleSize)).map((scheduled) =>
         run({
           playerDeck: options.deck,
           opponentDeck: options.opponentDeck,

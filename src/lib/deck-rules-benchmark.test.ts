@@ -11,6 +11,7 @@ import {
   aggregateRulesPairedOutcomes,
   computeRulesPairwiseComparisons,
   runRulesDeckBenchmark,
+  runRulesDeckOnBenchmarkSchedule,
   summarizeRulesScheduledResults,
   type RulesBenchmarkDependencies,
 } from "@/lib/deck-rules-benchmark";
@@ -204,6 +205,45 @@ test("pairwise comparison excludes any schedule index with an inconclusive side"
     netResolvedWins: 1,
   });
   assert.equal(comparisons[1].excludedByInconclusive, 2);
+});
+
+test("single-deck schedule exposes compact observations without retaining traces", () => {
+  const schedule = buildPairedBenchmarkSchedule(3, { cpuSkill: "level3" });
+  const registry = new BattleEffectRegistry(CARDS);
+  const environment = Object.freeze({
+    registry,
+    playerCoverage: calculateDeckCoverage(VARIANTS[0].deck, registry),
+    opponentCoverage: calculateDeckCoverage(OPPONENT_DECK, registry),
+  });
+  const observed: number[] = [];
+  const result = runRulesDeckOnBenchmarkSchedule(
+    {
+      deck: VARIANTS[0].deck,
+      opponentDeck: OPPONENT_DECK,
+      cards: CARDS,
+      schedule,
+      environment,
+      traceMode: "compact",
+      replaySampleSize: 0,
+      onResult: (game) => observed.push(game.trace?.length ?? 0),
+    },
+    (options) => ({
+      ...fakeResult(options.seed, options.firstPlayer, options.environment),
+      trace: [
+        {
+          index: 0,
+          type: "play_card",
+          turn: 2,
+          actor: "player",
+          cardId: RECOMMENDED_CARD.id,
+        },
+      ],
+    }),
+  );
+
+  assert.deepEqual(observed, [1, 1, 1]);
+  assert.equal(result.metrics.traceSamples, undefined);
+  assert.equal(result.outcomes.length, 3);
 });
 
 function benchmarkOptions() {

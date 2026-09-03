@@ -1,16 +1,26 @@
 import type { CardListItem } from "@/lib/cards";
 import {
-  BENCHMARK_SEED_STEP,
   BENCHMARK_SERVER_MAX_TURNS,
   BenchmarkDeckValidationError,
   buildPairedBenchmarkSchedule,
-  runDeckOnBenchmarkSchedule,
   strictDeckIntelligencePracticeDeck,
-  type BenchmarkDeckMetrics,
-  type BenchmarkDependencies,
   type BenchmarkOpponentDescriptor,
   type BenchmarkScheduleEntry,
 } from "@/lib/deck-battle-benchmark";
+import type { BattleTraceEvent } from "@/lib/battle-engine/battle-trace";
+import { calculateDeckCoverage, type DeckEffectCoverage } from "@/lib/battle-engine/coverage";
+import { BattleEffectRegistry } from "@/lib/battle-engine/effect-registry";
+import type { EffectCoverageStatus } from "@/lib/battle-engine/effects";
+import {
+  runHeadlessBattle,
+  type HeadlessBattleEnvironment,
+} from "@/lib/battle-engine/headless-runner";
+import {
+  runRulesDeckOnBenchmarkSchedule,
+  type RulesBenchmarkDeckMetrics,
+  type RulesBenchmarkDependencies,
+  type RulesScheduledOutcome,
+} from "@/lib/deck-rules-benchmark";
 import { buildDeckCoachMetrics } from "@/lib/deck-coach-metrics";
 import {
   applyDeckCopyEntries,
@@ -43,21 +53,34 @@ export const OPTIMIZER_DEFAULT_GAMES: OptimizerGames = 300;
 export const OPTIMIZER_DEFAULT_CANDIDATE_LIMIT = 8;
 export const OPTIMIZER_MAX_CANDIDATE_LIMIT = 20;
 export const OPTIMIZER_MAX_SIMULATION_BUDGET = 10_500;
-export const OPTIMIZER_REPLAY_SAMPLE_SIZE = 1;
 export const OPTIMIZER_DISCLAIMER_JA =
-  "改善候補はGrand Lineの現在のPractice engineによる比較結果です。公式環境での強さや大会勝率の改善を保証するものではありません。";
+  "改善候補はGrand Line Rules Kernelで現在再現可能なverified officialカード効果の範囲内で、baselineと候補を同一scheduleで比較した結果です。partial / unsupported効果は推測実行していません。大会環境での強さ・勝率・最適構築を保証するものではありません。";
 
 export type OptimizerEvidenceStatus =
   | "improvement_signal"
   | "small_difference"
-  | "no_improvement";
+  | "no_improvement"
+  | "insufficient_evidence";
+
+export interface OptimizerCardObservation {
+  cardId: string;
+  plays: number;
+  attacks: number;
+  counters: number;
+  triggerChoices: number;
+  triggerActivations: number;
+  searches: number;
+  effectTargets: number;
+  observedActions: number;
+  averageObservedTurn: number | null;
+}
 
 export interface OptimizerRemovalEvidence {
   cardId: string;
-  contributionImpact: number;
-  appearances: number;
-  uses: number;
-  averageTurn: number | null;
+  observation: OptimizerCardObservation;
+  structuralRoleScore: number;
+  sharedLeaderFeatures: number;
+  coverageStatus: EffectCoverageStatus;
   retentionScore: number;
 }
 
@@ -69,28 +92,40 @@ export interface OptimizerAdditionEvidence {
 
 export interface OptimizerPairedOutcomes {
   games: number;
+  bothResolved: number;
+  excludedByInconclusive: number;
   bothWin: number;
   bothLose: number;
-  gainedWins: number;
-  lostWins: number;
-  netPairedWins: number;
-  discordantGames: number;
-  /**
-   * Signed share of all paired games that flipped in the candidate's favor:
-   * (candidate-only wins - baseline-only wins) / total paired games.
-   */
-  pairedImprovementRate: number;
+  candidateOnlyWins: number;
+  baselineOnlyWins: number;
+  netResolvedWins: number;
+  discordantResolvedGames: number;
+  netResolvedWinShare: number | null;
 }
 
-export interface OptimizerBenchmarkDeltas {
-  heuristicWinRate: number;
-  firstPlayerWinRate: number;
-  secondPlayerWinRate: number;
-  avgTurns: number;
-  averageDonEfficiency: number;
-  triggerRevealRate: number;
-  triggerSuccessRate: number;
-  counterOverflowOnLoss: number;
+export interface OptimizerRulesDeltas {
+  resolvedWinRate: number | null;
+  resolutionRate: number;
+  firstPlayerResolvedWinRate: number | null;
+  secondPlayerResolvedWinRate: number | null;
+  averageResolvedTurns: number | null;
+  attacksPerGame: number;
+  blockersPerGame: number;
+  counterCardsPerGame: number;
+  triggerActivationsPerGame: number;
+  supportedEffectsPerGame: number;
+}
+
+export interface OptimizerCoverageDelta {
+  supportedCards: number;
+  partialCards: number;
+  unsupportedCards: number;
+  supportedRatio: number;
+  baselineComplete: boolean;
+  candidateComplete: boolean;
+  baselineLeaderStatus: EffectCoverageStatus;
+  candidateLeaderStatus: EffectCoverageStatus;
+  worsened: boolean;
 }
 
 export interface OptimizerStructuralDelta {
@@ -114,9 +149,10 @@ export interface DeckOptimizerCandidate {
   removeCardId: string;
   addCardId: string;
   swapCount: 1 | 2;
-  baselineMetrics: BenchmarkDeckMetrics;
-  candidateMetrics: BenchmarkDeckMetrics;
-  deltas: OptimizerBenchmarkDeltas;
+  baselineMetrics: RulesBenchmarkDeckMetrics;
+  candidateMetrics: RulesBenchmarkDeckMetrics;
+  deltas: OptimizerRulesDeltas;
+  coverageDelta: OptimizerCoverageDelta;
   pairedOutcomes: OptimizerPairedOutcomes;
   structuralDelta: OptimizerStructuralDelta;
   removalEvidence: OptimizerRemovalEvidence;
@@ -127,12 +163,12 @@ export interface DeckOptimizerCandidate {
 }
 
 export interface DeckOptimizerResult {
-  schemaVersion: 1;
-  optimizerLabel: "Optimizer candidate / 改善候補";
+  schemaVersion: 2;
+  optimizerLabel: "Rules Kernel Optimizer v2";
   disclaimerJa: string;
   baseline: {
     cards: DeckCopyEntry[];
-    metrics: BenchmarkDeckMetrics;
+    metrics: RulesBenchmarkDeckMetrics;
   };
   candidates: DeckOptimizerCandidate[];
   schedule: {
@@ -145,6 +181,7 @@ export interface DeckOptimizerResult {
     totalSimulations: number;
   };
   opponent: BenchmarkOpponentDescriptor;
+  opponentCoverage: DeckEffectCoverage;
   selectedVariant: {
     variantProfile: VariantProfile;
     selectedStyle: MainStyle;
@@ -163,11 +200,15 @@ export interface DeckOptimizerInput {
   persistedSynergies: RuleSynergy[];
   opponentDeck: PracticeDeck;
   opponent: BenchmarkOpponentDescriptor;
+  baseSeed: number;
+  seedStep: number;
   cpuSkill: CpuSkill;
   maxTurns: number;
   optimizerGames: OptimizerGames;
   candidateLimit: number;
 }
+
+export type OptimizerRulesDependencies = RulesBenchmarkDependencies;
 
 export class DeckOptimizerError extends Error {
   constructor(
@@ -196,7 +237,10 @@ interface PreparedOptimizerCandidate {
 
 export function runDeckOptimizer(
   input: DeckOptimizerInput,
-  dependencies?: BenchmarkDependencies,
+  dependencies: OptimizerRulesDependencies = {
+    run: runHeadlessBattle,
+    buildRegistry: (cards) => new BattleEffectRegistry(cards),
+  },
 ): DeckOptimizerResult {
   validateOptimizerBounds(input);
   const poolById = new Map(input.pool.map((card) => [card.id, card]));
@@ -225,17 +269,34 @@ export function runDeckOptimizer(
   }
 
   const schedule = buildPairedBenchmarkSchedule(input.optimizerGames, {
+    baseSeed: input.baseSeed,
+    seedStep: input.seedStep,
     cpuSkill: input.cpuSkill,
     maxTurns: input.maxTurns,
   });
-  const baselineRun = runDeckOnBenchmarkSchedule(
+  const registry = dependencies.buildRegistry(input.pool);
+  const opponentCoverage = calculateDeckCoverage(input.opponentDeck, registry);
+  const baselineCoverage = calculateDeckCoverage(baselineDeck, registry);
+  const baselineEnvironment = buildOptimizerEnvironment(
+    registry,
+    baselineCoverage,
+    opponentCoverage,
+  );
+  const observationCollector = createOptimizerCardObservationCollector(
+    baselineDeck.entries.map((entry) => entry.card.id),
+  );
+  const baselineRun = runRulesDeckOnBenchmarkSchedule(
     {
       deck: baselineDeck,
       opponentDeck: input.opponentDeck,
+      cards: input.pool,
       schedule,
-      replaySampleSize: OPTIMIZER_REPLAY_SAMPLE_SIZE,
+      environment: baselineEnvironment,
+      replaySampleSize: 0,
+      traceMode: "compact",
+      onResult: (result) => observationCollector.observe(result.trace ?? []),
     },
-    dependencies,
+    dependencies.run,
   );
   const selection = resolveDeckPreferences(
     input.selectedStyle,
@@ -255,7 +316,11 @@ export function runDeckOptimizer(
     preparedRanking.rankingContext,
     input.variantProfile,
   );
-  const removalEvidence = rankRemovalEvidence(baselineDeck, baselineRun.evidence);
+  const removalEvidence = rankRemovalEvidence(
+    baselineDeck,
+    observationCollector.finish(),
+    baselineCoverage,
+  );
   const preparedCandidates = prepareCandidates({
     baselineDeck,
     poolById,
@@ -272,44 +337,56 @@ export function runDeckOptimizer(
   }
 
   const baselineStructure = structuralSnapshot(input.leader, baselineDeck.entries);
-  const repeatedBaselineMetrics = {
-    ...baselineRun.metrics,
-    replaySamples: [],
-  };
+  const preparedById = new Map(
+    preparedCandidates.map((candidate) => [candidate.candidateId, candidate]),
+  );
   const candidates = preparedCandidates.map((candidate) => {
-    const candidateRun = runDeckOnBenchmarkSchedule(
+    const candidateCoverage = calculateDeckCoverage(candidate.deck, registry);
+    const candidateRun = runRulesDeckOnBenchmarkSchedule(
       {
         deck: candidate.deck,
         opponentDeck: input.opponentDeck,
+        cards: input.pool,
         schedule,
-        replaySampleSize: OPTIMIZER_REPLAY_SAMPLE_SIZE,
+        environment: buildOptimizerEnvironment(
+          registry,
+          candidateCoverage,
+          opponentCoverage,
+        ),
+        replaySampleSize: 0,
+        traceMode: "none",
       },
-      dependencies,
+      dependencies.run,
     );
     const pairedOutcomes = aggregateOptimizerPairedOutcomes(
       baselineRun.outcomes,
       candidateRun.outcomes,
     );
-    const deltas = benchmarkDeltas(
+    const deltas = rulesBenchmarkDeltas(
       baselineRun.metrics,
       candidateRun.metrics,
     );
+    const coverageDelta = compareCoverage(baselineCoverage, candidateCoverage);
     const structuralDelta = compareStructures(
       baselineStructure,
       structuralSnapshot(input.leader, candidate.deck.entries),
     );
-    const evidenceStatus = classifyEvidence(
+    const evidenceStatus = classifyOptimizerEvidence(
       pairedOutcomes,
-      deltas.heuristicWinRate,
+      deltas,
+      coverageDelta,
+      baselineRun.metrics,
+      candidateRun.metrics,
     );
     return {
       candidateId: candidate.candidateId,
       removeCardId: candidate.removeCardId,
       addCardId: candidate.addCardId,
       swapCount: candidate.swapCount,
-      baselineMetrics: repeatedBaselineMetrics,
+      baselineMetrics: baselineRun.metrics,
       candidateMetrics: candidateRun.metrics,
       deltas,
+      coverageDelta,
       pairedOutcomes,
       structuralDelta,
       removalEvidence: candidate.removalEvidence,
@@ -319,24 +396,28 @@ export function runDeckOptimizer(
         candidate,
         structuralDelta,
         pairedOutcomes,
-        input.optimizerGames,
+        coverageDelta,
       ),
       resultingDeck: { cards: candidate.cards },
     } satisfies DeckOptimizerCandidate;
   });
   candidates.sort(
     (left, right) =>
-      right.pairedOutcomes.netPairedWins -
-        left.pairedOutcomes.netPairedWins ||
-      right.deltas.heuristicWinRate - left.deltas.heuristicWinRate ||
-      right.structuralDelta.evaluationScores.stability -
-        left.structuralDelta.evaluationScores.stability ||
+      evidencePriority(left.evidenceStatus) - evidencePriority(right.evidenceStatus) ||
+      right.pairedOutcomes.netResolvedWins - left.pairedOutcomes.netResolvedWins ||
+      compareNullableDescending(
+        left.deltas.resolvedWinRate,
+        right.deltas.resolvedWinRate,
+      ) ||
+      right.deltas.resolutionRate - left.deltas.resolutionRate ||
+      (preparedById.get(right.candidateId)?.preRankScore ?? 0) -
+        (preparedById.get(left.candidateId)?.preRankScore ?? 0) ||
       left.candidateId.localeCompare(right.candidateId),
   );
 
   return {
-    schemaVersion: 1,
-    optimizerLabel: "Optimizer candidate / 改善候補",
+    schemaVersion: 2,
+    optimizerLabel: "Rules Kernel Optimizer v2",
     disclaimerJa: OPTIMIZER_DISCLAIMER_JA,
     baseline: {
       cards: toDeckCopyEntries(baselineDeck.entries),
@@ -346,16 +427,14 @@ export function runDeckOptimizer(
     schedule: {
       gamesPerDeck: schedule.length,
       baseSeed: schedule[0].seed,
-      seedStep:
-        schedule.length > 1
-          ? schedule[1].seed - schedule[0].seed
-          : BENCHMARK_SEED_STEP,
+      seedStep: input.seedStep,
       cpuSkill: schedule[0].cpuSkill,
       maxTurns: schedule[0].maxTurns,
       sample: schedule.slice(0, 6),
       totalSimulations: (candidates.length + 1) * schedule.length,
     },
     opponent: input.opponent,
+    opponentCoverage,
     selectedVariant: {
       variantProfile: input.variantProfile,
       selectedStyle: selection.selectedStyle,
@@ -365,8 +444,8 @@ export function runDeckOptimizer(
 }
 
 export function aggregateOptimizerPairedOutcomes(
-  baselineOutcomes: boolean[],
-  candidateOutcomes: boolean[],
+  baselineOutcomes: RulesScheduledOutcome[],
+  candidateOutcomes: RulesScheduledOutcome[],
 ): OptimizerPairedOutcomes {
   if (
     baselineOutcomes.length === 0 ||
@@ -378,26 +457,39 @@ export function aggregateOptimizerPairedOutcomes(
   }
   let bothWin = 0;
   let bothLose = 0;
-  let gainedWins = 0;
-  let lostWins = 0;
+  let bothResolved = 0;
+  let excludedByInconclusive = 0;
+  let candidateOnlyWins = 0;
+  let baselineOnlyWins = 0;
   for (let index = 0; index < baselineOutcomes.length; index++) {
     const baseline = baselineOutcomes[index];
     const candidate = candidateOutcomes[index];
-    if (baseline && candidate) bothWin += 1;
-    else if (!baseline && !candidate) bothLose += 1;
-    else if (!baseline && candidate) gainedWins += 1;
-    else lostWins += 1;
+    if (baseline === "inconclusive" || candidate === "inconclusive") {
+      excludedByInconclusive += 1;
+      continue;
+    }
+    bothResolved += 1;
+    if (baseline === "win" && candidate === "win") bothWin += 1;
+    else if (baseline === "loss" && candidate === "loss") bothLose += 1;
+    else if (baseline === "loss" && candidate === "win") {
+      candidateOnlyWins += 1;
+    } else {
+      baselineOnlyWins += 1;
+    }
   }
-  const netPairedWins = gainedWins - lostWins;
+  const netResolvedWins = candidateOnlyWins - baselineOnlyWins;
   return {
     games: baselineOutcomes.length,
+    bothResolved,
+    excludedByInconclusive,
     bothWin,
     bothLose,
-    gainedWins,
-    lostWins,
-    netPairedWins,
-    discordantGames: gainedWins + lostWins,
-    pairedImprovementRate: round6(netPairedWins / baselineOutcomes.length),
+    candidateOnlyWins,
+    baselineOnlyWins,
+    netResolvedWins,
+    discordantResolvedGames: candidateOnlyWins + baselineOnlyWins,
+    netResolvedWinShare:
+      bothResolved > 0 ? round6(netResolvedWins / bothResolved) : null,
   };
 }
 
@@ -410,6 +502,18 @@ export function applyOptimizerCandidate<T>(
 }
 
 function validateOptimizerBounds(input: DeckOptimizerInput): void {
+  if (!Number.isInteger(input.baseSeed)) {
+    throw new DeckOptimizerError(
+      "baseSeed must be an integer.",
+      "invalid_optimizer_request",
+    );
+  }
+  if (!Number.isInteger(input.seedStep) || input.seedStep < 1) {
+    throw new DeckOptimizerError(
+      "seedStep must be a positive integer.",
+      "invalid_optimizer_request",
+    );
+  }
   if (!OPTIMIZER_SIZE_OPTIONS.some((option) => option.games === input.optimizerGames)) {
     throw new DeckOptimizerError(
       `Unsupported optimizer game count: ${input.optimizerGames}.`,
@@ -446,50 +550,136 @@ function validateOptimizerBounds(input: DeckOptimizerInput): void {
   }
 }
 
+export function createOptimizerCardObservationCollector(
+  cardIds: string[],
+): {
+  observe: (events: readonly BattleTraceEvent[]) => void;
+  finish: () => OptimizerCardObservation[];
+} {
+  const accumulators = new Map(
+    [...new Set(cardIds)].sort().map((cardId) => [
+      cardId,
+      {
+        cardId,
+        plays: 0,
+        attacks: 0,
+        counters: 0,
+        triggerChoices: 0,
+        triggerActivations: 0,
+        searches: 0,
+        effectTargets: 0,
+        observedActions: 0,
+        observedTurnTotal: 0,
+      },
+    ]),
+  );
+  return {
+    observe(events) {
+      for (const event of events) {
+        if (event.actor !== "player" || !event.cardId) continue;
+        const accumulator = accumulators.get(event.cardId);
+        if (!accumulator || !OBSERVED_EVENT_TYPES.has(event.type)) continue;
+        if (event.type === "play_card") accumulator.plays += 1;
+        else if (event.type === "attack_declared") accumulator.attacks += 1;
+        else if (event.type === "counter_used") accumulator.counters += 1;
+        else if (event.type === "trigger_choice") {
+          accumulator.triggerChoices += 1;
+          if (event.details?.activated === true) {
+            accumulator.triggerActivations += 1;
+          }
+        } else if (event.type === "search_choice") accumulator.searches += 1;
+        else if (event.type === "effect_target") accumulator.effectTargets += 1;
+        accumulator.observedActions += 1;
+        accumulator.observedTurnTotal += event.turn;
+      }
+    },
+    finish() {
+      return [...accumulators.values()].map(
+        ({ observedTurnTotal, ...observation }) => ({
+          ...observation,
+          averageObservedTurn:
+            observation.observedActions > 0
+              ? round6(observedTurnTotal / observation.observedActions)
+              : null,
+        }),
+      );
+    },
+  };
+}
+
+const OBSERVED_EVENT_TYPES = new Set<BattleTraceEvent["type"]>([
+  "play_card",
+  "attack_declared",
+  "counter_used",
+  "trigger_choice",
+  "search_choice",
+  "effect_target",
+]);
+
+function buildOptimizerEnvironment(
+  registry: BattleEffectRegistry,
+  playerCoverage: DeckEffectCoverage,
+  opponentCoverage: DeckEffectCoverage,
+): HeadlessBattleEnvironment {
+  return Object.freeze({ registry, playerCoverage, opponentCoverage });
+}
+
 function rankRemovalEvidence(
   deck: PracticeDeck,
-  evidence: ReturnType<typeof runDeckOnBenchmarkSchedule>["evidence"],
+  observations: OptimizerCardObservation[],
+  coverage: DeckEffectCoverage,
 ): OptimizerRemovalEvidence[] {
-  const contributions = new Map(
-    evidence.playerContributions.map((item) => [item.cardId, item]),
+  const observationById = new Map(
+    observations.map((observation) => [observation.cardId, observation]),
   );
-  const timings = new Map(evidence.cardTiming.map((item) => [item.cardId, item]));
+  const coverageById = new Map(
+    coverage.entries.map((entry) => [entry.cardId, entry.status]),
+  );
   const leaderFeatures = new Set(deck.leader.features);
   return deck.entries
     .map((entry) => {
-      const contribution = contributions.get(entry.card.id);
-      const timing = timings.get(entry.card.id);
-      const sharedFeatures = entry.card.features.filter((feature) =>
+      const observation = observationById.get(entry.card.id) ??
+        emptyCardObservation(entry.card.id);
+      const sharedLeaderFeatures = entry.card.features.filter((feature) =>
         leaderFeatures.has(feature),
       ).length;
-      const structuralRoles = entry.card.mechanics.filter((mechanic) =>
+      const structuralRoleScore = entry.card.mechanics.filter((mechanic) =>
         ["Search", "Look", "Blocker", "Rush", "OnPlay"].includes(mechanic),
-      ).length;
-      const contributionImpact = contribution?.impact ?? 0;
-      const appearances = contribution?.appearances ?? 0;
-      const uses = timing?.uses ?? 0;
+      ).length * 2;
       return {
         cardId: entry.card.id,
-        contributionImpact,
-        appearances,
-        uses,
-        averageTurn: timing?.averageTurn ?? null,
+        observation,
+        structuralRoleScore,
+        sharedLeaderFeatures,
+        coverageStatus: coverageById.get(entry.card.id) ?? "unsupported",
         retentionScore: round6(
-          contributionImpact * 3 +
-            appearances * 1.5 +
-            uses * 2 +
-            sharedFeatures * 4 +
-            structuralRoles * 2,
+          observation.observedActions * 2 +
+            sharedLeaderFeatures * 4 +
+            structuralRoleScore,
         ),
       };
     })
     .sort(
       (left, right) =>
         left.retentionScore - right.retentionScore ||
-        left.contributionImpact - right.contributionImpact ||
-        left.uses - right.uses ||
+        left.observation.observedActions - right.observation.observedActions ||
         left.cardId.localeCompare(right.cardId),
     );
+}
+
+function emptyCardObservation(cardId: string): OptimizerCardObservation {
+  return {
+    cardId,
+    plays: 0,
+    attacks: 0,
+    counters: 0,
+    triggerChoices: 0,
+    triggerActivations: 0,
+    searches: 0,
+    effectTargets: 0,
+    observedActions: 0,
+    averageObservedTurn: null,
+  };
 }
 
 function prepareCandidates({
@@ -719,48 +909,123 @@ function compareStructures(
   };
 }
 
-function benchmarkDeltas(
-  baseline: BenchmarkDeckMetrics,
-  candidate: BenchmarkDeckMetrics,
-): OptimizerBenchmarkDeltas {
+export function rulesBenchmarkDeltas(
+  baseline: RulesBenchmarkDeckMetrics,
+  candidate: RulesBenchmarkDeckMetrics,
+): OptimizerRulesDeltas {
   return {
-    heuristicWinRate: round6(
-      candidate.heuristicWinRate - baseline.heuristicWinRate,
+    resolvedWinRate: subtractNullable(
+      candidate.resolvedWinRate,
+      baseline.resolvedWinRate,
     ),
-    firstPlayerWinRate: round6(
-      candidate.firstPlayerWinRate - baseline.firstPlayerWinRate,
+    resolutionRate: round6(candidate.resolutionRate - baseline.resolutionRate),
+    firstPlayerResolvedWinRate: subtractNullable(
+      candidate.firstPlayer.resolvedWinRate,
+      baseline.firstPlayer.resolvedWinRate,
     ),
-    secondPlayerWinRate: round6(
-      candidate.secondPlayerWinRate - baseline.secondPlayerWinRate,
+    secondPlayerResolvedWinRate: subtractNullable(
+      candidate.secondPlayer.resolvedWinRate,
+      baseline.secondPlayer.resolvedWinRate,
     ),
-    avgTurns: round6(candidate.avgTurns - baseline.avgTurns),
-    averageDonEfficiency: round6(
-      candidate.averageDonEfficiency - baseline.averageDonEfficiency,
+    averageResolvedTurns: subtractNullable(
+      candidate.averageResolvedTurns,
+      baseline.averageResolvedTurns,
     ),
-    triggerRevealRate: round6(
-      candidate.triggerRevealRate - baseline.triggerRevealRate,
+    attacksPerGame: perGameDelta(
+      baseline.rulesStats.attacksDeclared,
+      baseline.games,
+      candidate.rulesStats.attacksDeclared,
+      candidate.games,
     ),
-    triggerSuccessRate: round6(
-      candidate.triggerSuccessRate - baseline.triggerSuccessRate,
+    blockersPerGame: perGameDelta(
+      baseline.rulesStats.blockersUsed,
+      baseline.games,
+      candidate.rulesStats.blockersUsed,
+      candidate.games,
     ),
-    counterOverflowOnLoss: round6(
-      candidate.counterOverflowOnLoss - baseline.counterOverflowOnLoss,
+    counterCardsPerGame: perGameDelta(
+      baseline.rulesStats.counterCardsUsed,
+      baseline.games,
+      candidate.rulesStats.counterCardsUsed,
+      candidate.games,
+    ),
+    triggerActivationsPerGame: perGameDelta(
+      baseline.rulesStats.triggersActivated,
+      baseline.games,
+      candidate.rulesStats.triggersActivated,
+      candidate.games,
+    ),
+    supportedEffectsPerGame: perGameDelta(
+      baseline.rulesStats.supportedEffectsResolved,
+      baseline.games,
+      candidate.rulesStats.supportedEffectsResolved,
+      candidate.games,
     ),
   };
 }
 
-function classifyEvidence(
+const COVERAGE_STATUS_RANK = {
+  unsupported: 0,
+  partial: 1,
+  supported: 2,
+} as const satisfies Record<EffectCoverageStatus, number>;
+
+function coverageQualityScore(coverage: DeckEffectCoverage): number {
+  return coverage.supportedCards * 2 + coverage.partialCards;
+}
+
+export function compareCoverage(
+  baseline: DeckEffectCoverage,
+  candidate: DeckEffectCoverage,
+): OptimizerCoverageDelta {
+  const supportedCards = candidate.supportedCards - baseline.supportedCards;
+  const partialCards = candidate.partialCards - baseline.partialCards;
+  const unsupportedCards = candidate.unsupportedCards - baseline.unsupportedCards;
+  return {
+    supportedCards,
+    partialCards,
+    unsupportedCards,
+    supportedRatio: round6(candidate.supportedRatio - baseline.supportedRatio),
+    baselineComplete: baseline.complete,
+    candidateComplete: candidate.complete,
+    baselineLeaderStatus: baseline.leaderStatus,
+    candidateLeaderStatus: candidate.leaderStatus,
+    worsened:
+      coverageQualityScore(candidate) < coverageQualityScore(baseline) ||
+      COVERAGE_STATUS_RANK[candidate.leaderStatus] <
+        COVERAGE_STATUS_RANK[baseline.leaderStatus],
+  };
+}
+
+export function classifyOptimizerEvidence(
   paired: OptimizerPairedOutcomes,
-  heuristicWinRateDelta: number,
+  deltas: OptimizerRulesDeltas,
+  coverage: OptimizerCoverageDelta,
+  baseline: Pick<RulesBenchmarkDeckMetrics, "outcomes" | "resolvedWinRate">,
+  candidate: Pick<RulesBenchmarkDeckMetrics, "outcomes" | "resolvedWinRate">,
 ): OptimizerEvidenceStatus {
-  const materialFlip = Math.max(2, Math.ceil(paired.games * 0.01));
+  const minimumResolvedPairs = Math.max(20, Math.ceil(paired.games * 0.4));
   if (
-    paired.netPairedWins >= materialFlip &&
-    heuristicWinRateDelta > 0
+    paired.bothResolved < minimumResolvedPairs ||
+    baseline.outcomes.engineGuard > 0 ||
+    candidate.outcomes.engineGuard > 0 ||
+    baseline.resolvedWinRate === null ||
+    candidate.resolvedWinRate === null ||
+    deltas.resolvedWinRate === null ||
+    coverage.worsened
+  ) {
+    return "insufficient_evidence";
+  }
+  const materialFlip = Math.max(2, Math.ceil(paired.bothResolved * 0.01));
+  if (
+    paired.candidateOnlyWins > paired.baselineOnlyWins &&
+    paired.netResolvedWins >= materialFlip &&
+    deltas.resolvedWinRate > 0 &&
+    deltas.resolutionRate >= -0.05
   ) {
     return "improvement_signal";
   }
-  if (Math.abs(paired.netPairedWins) < materialFlip) {
+  if (Math.abs(paired.netResolvedWins) < materialFlip) {
     return "small_difference";
   }
   return "no_improvement";
@@ -770,15 +1035,59 @@ function buildCandidateReason(
   candidate: PreparedOptimizerCandidate,
   structure: OptimizerStructuralDelta,
   paired: OptimizerPairedOutcomes,
-  games: number,
+  coverage: OptimizerCoverageDelta,
 ): string {
   const score = candidate.additionEvidence.score;
   const structural = describeStructuralDelta(structure);
+  const observation = candidate.removalEvidence.observation;
   const averageTurn =
-    candidate.removalEvidence.averageTurn === null
+    observation.averageObservedTurn === null
       ? "記録なし"
-      : candidate.removalEvidence.averageTurn.toFixed(1);
-  return `${candidate.removeCardId}を${candidate.swapCount}枚減らし、${candidate.addCardId}を${candidate.swapCount}枚追加。OUTはcontribution impact ${candidate.removalEvidence.contributionImpact.toFixed(1)}・appearance ${candidate.removalEvidence.appearances}・use ${candidate.removalEvidence.uses}・average turn ${averageTurn}から改善余地を検証する枠として抽出しました（使われなかったことだけで弱いとは断定しません）。INは既存rankingでLeader適性${score.leaderAffinity}、Main Style${score.mainStyle}、Feature Tags${score.featureTags}、relationship${score.relationships}。${structural}${games}回の同一schedule比較ではcandidate-only win ${paired.gainedWins}回、baseline-only win ${paired.lostWins}回でした。`;
+      : observation.averageObservedTurn.toFixed(1);
+  const coverageWarning = coverage.worsened
+    ? "入替後はRules Kernel coverageが低下するため、この差を改善シグナルとして扱っていません。"
+    : "入替後のRules Kernel coverageはbaselineから悪化していません。";
+  return `${candidate.removeCardId}を${candidate.swapCount}枚減らし、${candidate.addCardId}を${candidate.swapCount}枚追加。OUT候補はRules Kernel自動対戦でplay ${observation.plays}回、attack ${observation.attacks}回、counter ${observation.counters}回、その他を含む計${observation.observedActions}回（平均turn ${averageTurn}）観測されました。この観測はカード自体の強弱を示すものではありません。IN候補は既存のdeterministic rankingでLeader適性${score.leaderAffinity}、Main Style${score.mainStyle}、Feature Tags${score.featureTags}、relationship${score.relationships}から候補化しています。${structural}同一seedで両方決着した${paired.bothResolved}試合では、候補のみ勝利${paired.candidateOnlyWins}回、baselineのみ勝利${paired.baselineOnlyWins}回。未決着を含む${paired.excludedByInconclusive}試合はpaired勝敗比較から除外しています。${coverageWarning}`;
+}
+
+function subtractNullable(
+  candidate: number | null,
+  baseline: number | null,
+): number | null {
+  return candidate === null || baseline === null
+    ? null
+    : round6(candidate - baseline);
+}
+
+function perGameDelta(
+  baselineTotal: number,
+  baselineGames: number,
+  candidateTotal: number,
+  candidateGames: number,
+): number {
+  return round6(
+    (candidateGames > 0 ? candidateTotal / candidateGames : 0) -
+      (baselineGames > 0 ? baselineTotal / baselineGames : 0),
+  );
+}
+
+function evidencePriority(status: OptimizerEvidenceStatus): number {
+  return {
+    improvement_signal: 0,
+    small_difference: 1,
+    no_improvement: 2,
+    insufficient_evidence: 3,
+  }[status];
+}
+
+function compareNullableDescending(
+  left: number | null,
+  right: number | null,
+): number {
+  if (left === null && right === null) return 0;
+  if (left === null) return 1;
+  if (right === null) return -1;
+  return right - left;
 }
 
 function describeStructuralDelta(delta: OptimizerStructuralDelta): string {

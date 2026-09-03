@@ -69,6 +69,8 @@ const bodySchema = z.object({
       message: "selectedTags cannot contain duplicates.",
     }),
   opponent: opponentDescriptorSchema,
+  baseSeed: z.number().int(),
+  seedStep: z.number().int().positive(),
   cpuSkill: z.enum(CPU_LEVEL_VALUES),
   maxTurns: z.number().int().min(1).max(BENCHMARK_SERVER_MAX_TURNS),
   optimizerGames: z.union([z.literal(100), z.literal(300), z.literal(500)]),
@@ -89,7 +91,7 @@ export async function POST(request: Request) {
   try {
     const [poolResult, regulations, savedOpponent, persistedSynergies] =
       await Promise.all([
-        listCards({ pageSize: 5_000 }),
+        listCards({ pageSize: 5_000, includeOfficialText: true }),
         activeRegulations(),
         body.opponent.kind === "saved"
           ? getSavedDeck(body.opponent.id)
@@ -132,6 +134,8 @@ export async function POST(request: Request) {
       persistedSynergies,
       opponentDeck: opponent.deck,
       opponent: opponent.descriptor,
+      baseSeed: body.baseSeed,
+      seedStep: body.seedStep,
       cpuSkill: body.cpuSkill,
       maxTurns: body.maxTurns,
       optimizerGames: body.optimizerGames,

@@ -4,7 +4,7 @@ import {
   type BattleState,
 } from "./state";
 
-export type BattleTraceMode = "none" | "summary" | "full";
+export type BattleTraceMode = "none" | "summary" | "compact" | "full";
 
 export type BattleTraceEventType =
   | "battle_start"
@@ -132,7 +132,7 @@ export function createBattleTraceRecorder(
         type,
         turn: state.turn,
         ...input,
-        state: summarizeBattleState(state),
+        ...(mode === "compact" ? {} : { state: summarizeBattleState(state) }),
       });
     },
   };

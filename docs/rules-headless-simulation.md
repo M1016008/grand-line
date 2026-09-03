@@ -13,15 +13,16 @@ Headless Runner       ✅
     ↓
 Battle Benchmark      ✅ Rules Benchmark v2
     ↓
-Optimizer             pending
+Optimizer             ✅ Rules Kernel Optimizer v2
     ↓
 Practice              pending
 ```
 
-The user-facing Deck Intelligence Battle Benchmark now uses the Rules Headless
-Runner. `deck-battle-benchmark.ts` keeps the legacy heuristic runner temporarily
-for Optimizer compatibility; `deck-optimizer.ts`, `practice-training.ts`, and
-the Practice UI remain on their existing paths until later migrations.
+The user-facing Deck Intelligence Battle Benchmark and Deck Optimizer use the
+Rules Headless Runner. The old `deck-battle-benchmark.ts` runner remains only
+for unmigrated Practice-era callers and regressions; Optimizer does not import
+or call it. `practice-training.ts` and the Practice UI remain on their existing
+paths until a dedicated migration.
 
 ## Architecture
 
@@ -94,6 +95,10 @@ effect registry; each variant receives its own Player coverage environment.
 
 - `none`: no event array; intended for Benchmark and Optimizer batches.
 - `summary`: battle/turn/end/guard snapshots only.
+- `compact`: every event keeps actor, turn, type, card id, instance id, effect,
+  target, and message metadata but omits battle-state snapshots. Optimizer uses
+  this only for its baseline observation pass and discards each game after it is
+  aggregated.
 - `full`: every policy-to-Kernel transition; intended for sampled replay and
   correctness tests.
 
@@ -114,9 +119,43 @@ and unsupported text is counted once when encountered. A supported effect is
 counted only when its Kernel resolution is reached; revealing and then
 activating one Trigger never records two encounters.
 
+## Rules Kernel Optimizer v2
+
+Optimizer candidate generation is still deterministic and preserves the
+existing legal 1/2-copy swaps, active restrictions, color legality, verified
+candidate ranking, Main Style, Feature Tags, and structural deck deltas. Only
+the evaluation engine changed.
+
+One optimizer request compiles one `BattleEffectRegistry`, computes Opponent
+coverage once, and builds separate Player coverage for the baseline and every
+candidate. Baseline and candidates run the same immutable opponent, base seed,
+seed step, first-player alternation, CPU level, and maximum-turn schedule.
+
+Paired results are tri-state: win, loss, or inconclusive. A pair contributes to
+`candidateOnlyWins`, `baselineOnlyWins`, `bothWin`, or `bothLose` only when both
+matches resolved. Any pair containing an inconclusive result is excluded and
+reported separately. Candidate metrics use `RulesBenchmarkDeckMetrics`, so the
+UI presents resolved win rate with Wilson 95% CI, resolution rate, first/second
+splits, average resolved turns, Rules statistics, and effect coverage.
+
+The baseline compact trace is aggregated into per-card observations such as
+plays, attacks, Counter use, Trigger activation, Search, and effect targeting.
+No replay or full state history is retained. A candidate run uses `none`. An
+unobserved card is not classified as weak: removal order combines observation
+with structural role and shared Leader features, and partial/unsupported
+coverage status is reported without becoming a negative card score.
+
+`improvement_signal` is fail-closed. It requires enough both-resolved pairs, no
+engine guard, non-degraded coverage, positive resolved-win-rate change, no
+material resolution-rate regression, and more candidate-only than
+baseline-only wins. Otherwise the UI says `差は小さい`, `改善確認できず`, or
+`判定保留`. These labels describe only the current Rules Kernel evidence; they
+do not claim tournament strength, a best deck, or a statistically conclusive
+causal improvement.
+
 ## Known boundaries
 
 Coverage remains intentionally conservative. Partial or unsupported effect
 families identified by the existing compiler remain unexecuted. Rules Benchmark
-v2 is not a tournament or meta win-rate model. Optimizer and Practice still use
-their existing heuristic paths pending their dedicated migrations.
+v2 and Rules Kernel Optimizer v2 are not tournament or meta win-rate models.
+Practice still uses its existing path pending a dedicated migration.

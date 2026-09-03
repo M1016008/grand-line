@@ -19,7 +19,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { CardListItem } from "@/lib/cards";
-import type { BenchmarkOpponentDescriptor } from "@/lib/deck-battle-benchmark";
+import type {
+  BenchmarkOpponentDescriptor,
+  WilsonConfidenceInterval,
+} from "@/lib/deck-battle-benchmark";
+import type { RulesBenchmarkDeckMetrics } from "@/lib/deck-rules-benchmark";
 import type { DeckCopyEntry } from "@/lib/deck-intelligence-compare";
 import {
   VARIANT_PROFILE_IDS,
@@ -45,6 +49,8 @@ interface DeckOptimizerProps {
   pool: CardListItem[];
   variantCards: Record<VariantProfile, DeckCopyEntry[]>;
   opponent: BenchmarkOpponentDescriptor;
+  baseSeed: number;
+  seedStep: number;
   cpuSkill: CpuSkill;
   maxTurns: number;
   current: boolean;
@@ -71,6 +77,8 @@ export function DeckOptimizer({
   pool,
   variantCards,
   opponent,
+  baseSeed,
+  seedStep,
   cpuSkill,
   maxTurns,
   current,
@@ -114,6 +122,8 @@ export function DeckOptimizer({
           selectedStyle: response.selectedStyle,
           selectedTags: response.selectedTags,
           opponent,
+          baseSeed,
+          seedStep,
           cpuSkill,
           maxTurns,
           optimizerGames,
@@ -158,7 +168,7 @@ export function DeckOptimizer({
         <div>
           <h5 className="font-display text-base">改善する構築を選ぶ</h5>
           <p className="text-muted-foreground mt-1 text-[10px] leading-relaxed">
-            ベンチマーク済みの相手・CPU・最大ターンをそのまま使います。評価結果は優劣の断定ではなく、入替による差の手掛かりです。
+            ベンチマーク済みの相手・seed・CPU・最大ターンをそのまま使います。評価結果は優劣の断定ではなく、Rules Kernel内の入替差を確認する手掛かりです。
           </p>
         </div>
 
@@ -293,7 +303,7 @@ function OptimizerResults({
   return (
     <div className="border-border/40 space-y-3 border-t pt-4">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge variant="secondary">入替候補</Badge>
+        <Badge variant="secondary">{response.optimizer.optimizerLabel}</Badge>
         <span className="text-muted-foreground text-[10px]">
           {response.optimizer.schedule.gamesPerDeck}試合 / deck・
           {response.optimizer.schedule.totalSimulations.toLocaleString()} simulations・
@@ -334,22 +344,28 @@ function OptimizerResults({
 
                 <div className="border-primary/20 bg-primary/5 grid gap-2 rounded-md border p-3 sm:grid-cols-2">
                   <div>
-                    <div className="text-muted-foreground text-[9px]">勝利数の純増減</div>
+                    <div className="text-muted-foreground text-[9px]">
+                      同一seed・両方決着の純勝差
+                    </div>
                     <div className="font-mono text-lg">
-                      {signed(candidate.pairedOutcomes.netPairedWins)}
+                      {signed(candidate.pairedOutcomes.netResolvedWins)}
                     </div>
                     <div className="text-muted-foreground text-[9px]">
-                      増加 {candidate.pairedOutcomes.gainedWins} / 減少 {candidate.pairedOutcomes.lostWins}
+                      候補のみ勝利 {candidate.pairedOutcomes.candidateOnlyWins} / baselineのみ勝利 {candidate.pairedOutcomes.baselineOnlyWins}
+                    </div>
+                    <div className="text-muted-foreground text-[9px]">
+                      両方決着 {candidate.pairedOutcomes.bothResolved} / {candidate.pairedOutcomes.games}・未決着除外 {candidate.pairedOutcomes.excludedByInconclusive}
                     </div>
                   </div>
                   <div>
-                    <div className="text-muted-foreground text-[9px]">同条件での試行値</div>
+                    <div className="text-muted-foreground text-[9px]">決着試合勝率</div>
                     <div className="font-mono text-sm">
-                      {percent(candidate.baselineMetrics.heuristicWinRate)} →{" "}
-                      {percent(candidate.candidateMetrics.heuristicWinRate)}
+                      {nullablePercent(candidate.baselineMetrics.resolvedWinRate)} →{" "}
+                      {nullablePercent(candidate.candidateMetrics.resolvedWinRate)}
                     </div>
                     <div className="text-muted-foreground text-[9px]">
-                      差 {signedPoints(candidate.pairedOutcomes.pairedImprovementRate)}
+                      決着率 {percent(candidate.baselineMetrics.resolutionRate)} →{" "}
+                      {percent(candidate.candidateMetrics.resolutionRate)}
                     </div>
                   </div>
                 </div>
@@ -368,25 +384,68 @@ function OptimizerResults({
                 </Button>
                 {expanded ? (
                   <div id={`optimizer-candidate-${candidate.candidateId}`} className="space-y-3">
-                    <div className="grid grid-cols-2 gap-2 font-mono text-[10px]">
+                    <div className="grid gap-2 font-mono text-[10px] sm:grid-cols-2">
                       <div>
                         <div className="text-muted-foreground">候補 95% CI</div>
                         <div>
-                          {percent(candidate.candidateMetrics.heuristicWinRateCi95.lower)}–
-                          {percent(candidate.candidateMetrics.heuristicWinRateCi95.upper)}
+                          {confidenceInterval(candidate.candidateMetrics.resolvedWinRateCi95)}
                         </div>
                       </div>
                       <div>
-                        <div className="text-muted-foreground">先攻 / 後攻の差</div>
+                        <div className="text-muted-foreground">baseline 95% CI</div>
                         <div>
-                          {signedPoints(candidate.deltas.firstPlayerWinRate)} /{" "}
-                          {signedPoints(candidate.deltas.secondPlayerWinRate)}
+                          {confidenceInterval(candidate.baselineMetrics.resolvedWinRateCi95)}
                         </div>
                       </div>
+                      <div>
+                        <div className="text-muted-foreground">先攻 / 後攻 決着勝率差</div>
+                        <div>
+                          {nullableSignedPoints(candidate.deltas.firstPlayerResolvedWinRate)} /{" "}
+                          {nullableSignedPoints(candidate.deltas.secondPlayerResolvedWinRate)}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-muted-foreground">平均決着ターン差</div>
+                        <div>{nullableSigned(candidate.deltas.averageResolvedTurns)}</div>
+                      </div>
+                    </div>
+                    <div className="grid gap-2 text-[10px] sm:grid-cols-2">
+                      <RulesStatsSummary
+                        title="Baseline Rules stats / game"
+                        metrics={candidate.baselineMetrics}
+                      />
+                      <RulesStatsSummary
+                        title="Candidate Rules stats / game"
+                        metrics={candidate.candidateMetrics}
+                      />
+                      <CoverageSummary
+                        title="Baseline coverage"
+                        metrics={candidate.baselineMetrics}
+                      />
+                      <CoverageSummary
+                        title="Candidate coverage"
+                        metrics={candidate.candidateMetrics}
+                      />
+                    </div>
+                    {candidate.coverageDelta.worsened ? (
+                      <p className="text-source-unverified text-[10px] leading-relaxed">
+                        入替後はRules Kernel coverageが低下するため、この差を改善シグナルとして扱っていません。
+                      </p>
+                    ) : null}
+                    <div>
+                      <div className="text-muted-foreground mb-1 text-[9px] tracking-widest uppercase">
+                        Baseline observation
+                      </div>
+                      <p className="text-muted-foreground text-[10px]">
+                        OUTの観測: play {candidate.removalEvidence.observation.plays} / attack {candidate.removalEvidence.observation.attacks} / counter {candidate.removalEvidence.observation.counters} / Trigger {candidate.removalEvidence.observation.triggerActivations} / Search {candidate.removalEvidence.observation.searches}
+                      </p>
+                      <p className="text-muted-foreground text-[9px]">
+                        未観測をカード自体の弱さとは判定しません。
+                      </p>
                     </div>
                     <div>
                       <div className="text-muted-foreground mb-1 text-[9px] tracking-widest uppercase">
-                        構築変化
+                        構築変化（強さの断定ではありません）
                       </div>
                       <div className="flex flex-wrap gap-1">
                         <Badge variant="outline" className="text-[9px]">
@@ -459,11 +518,59 @@ function SwapBox({
   );
 }
 
+function RulesStatsSummary({
+  title,
+  metrics,
+}: {
+  title: string;
+  metrics: RulesBenchmarkDeckMetrics;
+}) {
+  const stats = metrics.rulesStats;
+  return (
+    <div className="border-border/30 space-y-1 rounded-md border p-2">
+      <div className="text-muted-foreground text-[9px] tracking-widest uppercase">
+        {title}
+      </div>
+      <p>attack {perGame(stats.attacksDeclared, metrics.games)}</p>
+      <p>blocker {perGame(stats.blockersUsed, metrics.games)}</p>
+      <p>counter card {perGame(stats.counterCardsUsed, metrics.games)}</p>
+      <p>Trigger activate {perGame(stats.triggersActivated, metrics.games)}</p>
+      <p>
+        supported effect {perGame(stats.supportedEffectsResolved, metrics.games)}
+      </p>
+    </div>
+  );
+}
+
+function CoverageSummary({
+  title,
+  metrics,
+}: {
+  title: string;
+  metrics: RulesBenchmarkDeckMetrics;
+}) {
+  const coverage = metrics.effectCoverage;
+  return (
+    <div className="border-border/30 space-y-1 rounded-md border p-2">
+      <div className="text-muted-foreground text-[9px] tracking-widest uppercase">
+        {title}
+      </div>
+      <p>
+        Main supported {coverage.supportedCards} / partial {coverage.partialCards} /
+        unsupported {coverage.unsupportedCards}
+      </p>
+      <p>Leader {coverage.leaderStatus}</p>
+      <p>complete {coverage.complete ? "yes" : "no"}</p>
+    </div>
+  );
+}
+
 function EvidenceBadge({ status }: { status: OptimizerEvidenceStatus }) {
   const labels: Record<OptimizerEvidenceStatus, string> = {
-    improvement_signal: "改善シグナルあり",
+    improvement_signal: "改善シグナル",
     small_difference: "差は小さい",
-    no_improvement: "今回の試行では改善せず",
+    no_improvement: "改善確認できず",
+    insufficient_evidence: "判定保留",
   };
   return (
     <Badge variant={status === "improvement_signal" ? "secondary" : "outline"}>
@@ -476,8 +583,30 @@ function percent(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
 }
 
+function nullablePercent(value: number | null): string {
+  return value === null ? "—" : percent(value);
+}
+
+function confidenceInterval(
+  interval: WilsonConfidenceInterval | null,
+): string {
+  return interval ? `${percent(interval.lower)}–${percent(interval.upper)}` : "—";
+}
+
 function signedPoints(value: number): string {
   return `${value > 0 ? "+" : ""}${(value * 100).toFixed(1)}pt`;
+}
+
+function nullableSignedPoints(value: number | null): string {
+  return value === null ? "—" : signedPoints(value);
+}
+
+function nullableSigned(value: number | null): string {
+  return value === null ? "—" : signed(value);
+}
+
+function perGame(value: number, games: number): string {
+  return games > 0 ? (value / games).toFixed(2) : "—";
 }
 
 function signed(value: number): string {
