@@ -368,6 +368,66 @@ test("coverage deltas identify degradation without treating status as card weakn
   assert.match(candidate.reasonJa, /カード自体の強弱を示すものではありません/);
 });
 
+test("coverage worsening follows supported > partial > unsupported quality", () => {
+  const cases = [
+    {
+      name: "supported to partial",
+      baseline: coverage({ supportedCards: 50 }),
+      candidate: coverage({ supportedCards: 49, partialCards: 1 }),
+      worsened: true,
+    },
+    {
+      name: "partial to unsupported",
+      baseline: coverage({ supportedCards: 49, partialCards: 1 }),
+      candidate: coverage({ supportedCards: 49, unsupportedCards: 1 }),
+      worsened: true,
+    },
+    {
+      name: "unsupported to partial",
+      baseline: coverage({ supportedCards: 49, unsupportedCards: 1 }),
+      candidate: coverage({ supportedCards: 49, partialCards: 1 }),
+      worsened: false,
+    },
+    {
+      name: "partial to supported",
+      baseline: coverage({ supportedCards: 49, partialCards: 1 }),
+      candidate: coverage({ supportedCards: 50 }),
+      worsened: false,
+    },
+    {
+      name: "unchanged",
+      baseline: coverage({ supportedCards: 48, partialCards: 1, unsupportedCards: 1 }),
+      candidate: coverage({ supportedCards: 48, partialCards: 1, unsupportedCards: 1 }),
+      worsened: false,
+    },
+  ];
+
+  for (const testCase of cases) {
+    assert.equal(
+      compareCoverage(testCase.baseline, testCase.candidate).worsened,
+      testCase.worsened,
+      testCase.name,
+    );
+  }
+});
+
+test("leader coverage quality can independently make coverage worse", () => {
+  assert.equal(
+    compareCoverage(
+      coverage({ leaderStatus: "supported" }),
+      coverage({ leaderStatus: "partial" }),
+    ).worsened,
+    true,
+  );
+  assert.equal(
+    compareCoverage(
+      coverage({ leaderStatus: "unsupported" }),
+      coverage({ leaderStatus: "partial" }),
+    ).worsened,
+    false,
+  );
+});
+
 test("applying an optimizer candidate remains fail-closed and preserves 50 cards", () => {
   const candidate = runOptimizer().candidates[0];
   const poolById = new Map(POOL.map((candidateCard) => [candidateCard.id, candidateCard]));

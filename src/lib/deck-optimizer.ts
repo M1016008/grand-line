@@ -964,6 +964,16 @@ export function rulesBenchmarkDeltas(
   };
 }
 
+const COVERAGE_STATUS_RANK = {
+  unsupported: 0,
+  partial: 1,
+  supported: 2,
+} as const satisfies Record<EffectCoverageStatus, number>;
+
+function coverageQualityScore(coverage: DeckEffectCoverage): number {
+  return coverage.supportedCards * 2 + coverage.partialCards;
+}
+
 export function compareCoverage(
   baseline: DeckEffectCoverage,
   candidate: DeckEffectCoverage,
@@ -981,7 +991,9 @@ export function compareCoverage(
     baselineLeaderStatus: baseline.leaderStatus,
     candidateLeaderStatus: candidate.leaderStatus,
     worsened:
-      supportedCards < 0 || partialCards > 0 || unsupportedCards > 0,
+      coverageQualityScore(candidate) < coverageQualityScore(baseline) ||
+      COVERAGE_STATUS_RANK[candidate.leaderStatus] <
+        COVERAGE_STATUS_RANK[baseline.leaderStatus],
   };
 }
 
