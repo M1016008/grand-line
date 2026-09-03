@@ -3,7 +3,10 @@ import { NextResponse } from "next/server";
 
 import { db } from "@/db";
 import { practiceGames, practiceRuns } from "@/db/schema";
-import type { PracticeSide, WinReason } from "@/lib/practice-log";
+import type { PracticeSide } from "@/lib/practice-log";
+import { RULES_PRACTICE_ENGINE_VERSION } from "@/lib/practice-rules";
+import type { RulesBattleStats } from "@/lib/battle-engine/battle-trace";
+import { summarizeStoredRulesOutcomes } from "@/lib/practice-rules-summary";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -46,12 +49,19 @@ interface MatchupAccumulator {
   runs: Set<string>;
   seenRunMetrics: Set<string>;
   games: number;
+  inconclusiveGames: number;
   playerWins: number;
   opponentWins: number;
   firstPlayerGames: number;
   firstPlayerWins: number;
   secondPlayerGames: number;
   secondPlayerWins: number;
+  firstPlayerResolvedGames: number;
+  secondPlayerResolvedGames: number;
+  resolvedTurnTotal: number;
+  rulesStats: RulesBattleStats;
+  playerCoverage?: unknown;
+  opponentCoverage?: unknown;
   turnTotal: number;
   donTotal: number;
   donCount: number;
@@ -64,7 +74,7 @@ interface MatchupAccumulator {
   redrawWins: number;
   counterOverflowTotal: number;
   counterOverflowLosses: number;
-  winReasons: Record<WinReason, number>;
+  winReasons: Record<string, number>;
   cardTiming: Map<string, { cardId: string; name: string; side: PracticeSide; turns: number[] }>;
   ablations: Map<string, { value: StoredAblation; deltas: number[] }>;
   latestRunAt: string | null;
@@ -98,18 +108,31 @@ export async function GET() {
     group.runs.add(row.runId);
     group.games += 1;
     group.turnTotal += row.turns;
+    const resolved = row.winner !== "inconclusive";
+    if (resolved) group.resolvedTurnTotal += row.turns;
     if (row.winner === "player") group.playerWins += 1;
-    else group.opponentWins += 1;
+    else if (row.winner === "opponent") group.opponentWins += 1;
+    else group.inconclusiveGames += 1;
     if (row.firstPlayer === "player") {
       group.firstPlayerGames += 1;
+      if (resolved) group.firstPlayerResolvedGames += 1;
       if (row.winner === "player") group.firstPlayerWins += 1;
     } else {
       group.secondPlayerGames += 1;
+      if (resolved) group.secondPlayerResolvedGames += 1;
       if (row.winner === "player") group.secondPlayerWins += 1;
     }
-    group.winReasons[row.reason] += 1;
+    group.winReasons[row.reason] = (group.winReasons[row.reason] ?? 0) + 1;
 
     const metrics = normalizeGameMetrics(row.summaryMetrics);
+    if (row.rulesVersion === RULES_PRACTICE_ENGINE_VERSION) {
+      addRulesStats(group.rulesStats, normalizeRulesStats(row.summaryMetrics));
+      if (!group.playerCoverage && row.runSummaryMetrics && typeof row.runSummaryMetrics === "object") {
+        group.playerCoverage = (row.runSummaryMetrics as Record<string, unknown>).playerCoverage;
+        group.opponentCoverage = (row.runSummaryMetrics as Record<string, unknown>).opponentCoverage;
+      }
+      continue;
+    }
     if (typeof metrics.averageDonEfficiency === "number") {
       group.donTotal += metrics.averageDonEfficiency;
       group.donCount += 1;
@@ -215,12 +238,17 @@ function createGroup(
     runs: new Set(),
     seenRunMetrics: new Set(),
     games: 0,
+    inconclusiveGames: 0,
     playerWins: 0,
     opponentWins: 0,
     firstPlayerGames: 0,
     firstPlayerWins: 0,
     secondPlayerGames: 0,
     secondPlayerWins: 0,
+    firstPlayerResolvedGames: 0,
+    secondPlayerResolvedGames: 0,
+    resolvedTurnTotal: 0,
+    rulesStats: emptyRulesStats(),
     turnTotal: 0,
     donTotal: 0,
     donCount: 0,
@@ -246,20 +274,44 @@ function createGroup(
 }
 
 function serializeGroup(group: MatchupAccumulator) {
+  const isRules = group.rulesVersion === RULES_PRACTICE_ENGINE_VERSION;
+  const resolvedGames = group.playerWins + group.opponentWins;
+  const rulesOutcomes = summarizeStoredRulesOutcomes({
+    games: group.games,
+    playerWins: group.playerWins,
+    opponentWins: group.opponentWins,
+    firstPlayerResolvedGames: group.firstPlayerResolvedGames,
+    firstPlayerWins: group.firstPlayerWins,
+    secondPlayerResolvedGames: group.secondPlayerResolvedGames,
+    secondPlayerWins: group.secondPlayerWins,
+    resolvedTurnTotal: group.resolvedTurnTotal,
+  });
   return {
     key: group.key,
     playerLeaderId: group.playerLeaderId,
     opponentLeaderId: group.opponentLeaderId,
     cpuSkill: group.cpuSkill,
     rulesVersion: group.rulesVersion,
+    engineKind: isRules ? "rules_kernel" : "legacy_heuristic",
     runs: group.runs.size,
     games: group.games,
     playerWins: group.playerWins,
     opponentWins: group.opponentWins,
-    winRate: rate(group.playerWins, group.games),
-    firstPlayerWinRate: rate(group.firstPlayerWins, group.firstPlayerGames),
-    secondPlayerWinRate: rate(group.secondPlayerWins, group.secondPlayerGames),
-    avgTurns: rate(group.turnTotal, group.games),
+    resolvedGames: rulesOutcomes.resolvedGames,
+    inconclusiveGames: rulesOutcomes.inconclusiveGames,
+    resolutionRate: rulesOutcomes.resolutionRate,
+    resolvedWinRate: rulesOutcomes.resolvedWinRate,
+    winRate: rate(group.playerWins, isRules ? resolvedGames : group.games),
+    firstPlayerWinRate: isRules ? rulesOutcomes.firstPlayerWinRate ?? 0 : rate(group.firstPlayerWins, group.firstPlayerGames),
+    secondPlayerWinRate: isRules ? rulesOutcomes.secondPlayerWinRate ?? 0 : rate(group.secondPlayerWins, group.secondPlayerGames),
+    avgTurns: isRules ? rulesOutcomes.averageResolvedTurns ?? 0 : rate(group.turnTotal, group.games),
+    ...(isRules ? {
+      firstPlayerResolvedGames: group.firstPlayerResolvedGames,
+      secondPlayerResolvedGames: group.secondPlayerResolvedGames,
+      rulesStats: group.rulesStats,
+      playerCoverage: group.playerCoverage,
+      opponentCoverage: group.opponentCoverage,
+    } : {}),
     averageDonEfficiency: rate(group.donTotal, group.donCount),
     triggerRevealRate: rate(group.triggerReveals, group.damageEvents),
     triggerSuccessRate: rate(group.triggerSuccesses, group.triggerReveals),
@@ -315,6 +367,31 @@ function normalizeGameMetrics(value: unknown): StoredGameMetrics {
     counterOverflowOnLoss: numberOrUndefined(record.counterOverflowOnLoss),
     cardUses,
   };
+}
+
+function normalizeRulesStats(value: unknown): Partial<RulesBattleStats> {
+  if (!value || typeof value !== "object") return {};
+  const stats = (value as Record<string, unknown>).rulesStats;
+  return stats && typeof stats === "object"
+    ? (stats as Partial<RulesBattleStats>)
+    : {};
+}
+
+function emptyRulesStats(): RulesBattleStats {
+  return {
+    cardsPlayed: 0, attacksDeclared: 0, leaderAttacks: 0, characterAttacks: 0,
+    damageDealt: 0, blockersUsed: 0, counterCardsUsed: 0, counterPowerUsed: 0,
+    triggersRevealed: 0, triggersActivated: 0, triggersDeclined: 0,
+    searchesResolved: 0, donAttached: 0, donSpent: 0, deckOut: 0,
+    supportedEffectsResolved: 0, partialEffectsEncountered: 0,
+    unsupportedEffectsEncountered: 0,
+  };
+}
+
+function addRulesStats(target: RulesBattleStats, source: Partial<RulesBattleStats>) {
+  for (const key of Object.keys(target) as Array<keyof RulesBattleStats>) {
+    target[key] += numberOrZero(source[key]);
+  }
 }
 
 function normalizeCardUse(value: unknown): StoredCardUse[] {

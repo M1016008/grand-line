@@ -24,11 +24,10 @@ Grand Line の練習機能は、オンライン対戦よりも「自分のデッ
 
 ## Replay Log Contract
 
-`GameReplayLog` remains the canonical full replay shape. To reduce local DB
-storage use, large batch runs may persist every game summary while storing
-full event streams for only a sampled subset of games. The run metadata records
-the storage policy so later tools can distinguish full replays from
-summary-only games.
+Rules Practice v2 uses `BattleTraceEvent` as the canonical Match/Batch trace.
+To reduce local DB storage use, large batch runs persist every game summary
+while rerunning only the selected sample indexes with `traceMode: "full"`.
+Historical `GameReplayLog` rows remain readable as `legacy_heuristic` records.
 
 すべての試合は `GameReplayLog` として保存できる形にする。
 
@@ -73,7 +72,14 @@ AI vs AIの大量対戦は、最大10,000戦までサーバー側で実行し、
 
 ## Metrics
 
-初期実装で集計する指標:
+Rules Match / Batchで集計する指標:
+
+- resolved / inconclusive件数とresolution rate。
+- resolved試合だけを分母にした勝率とWilson 95%区間。
+- 先攻・後攻別のresolved勝率。
+- Rules Kernelの攻撃、ブロッカー、Counter、Trigger、Search、DON、効果coverage。
+
+旧Training / legacy heuristic記録でのみ扱う指標:
 
 - 単純勝率。
 - Ablation分析。
@@ -88,6 +94,10 @@ AI vs AIの大量対戦は、最大10,000戦までサーバー側で実行し、
 - DON使用効率。
 
 `Ablation分析` は、対象カードをデッキ内の汎用カードへ差し替え、同じseed系列で再実行した勝率差をカード貢献度として扱う。厳密な因果推定ではないが、構築改善の入口として使える。
+
+`practice-training.ts` はこのv2移行の対象外で、現在もfull deck objectを
+受け取る旧evaluation engineである。Rules Match/Batchの結果やcoverageと
+混在させず、今後の移行対象として扱う。
 
 ## CPU Skill Targets
 

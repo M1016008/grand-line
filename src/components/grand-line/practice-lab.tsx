@@ -25,18 +25,20 @@ import {
   ANALYSIS_METRIC_DEFINITIONS,
   CPU_LEVELS,
   OFFICIAL_RULES_REFERENCE,
-  type GameReplayLog,
 } from "@/lib/practice-log";
 import {
   buildPracticeDeck,
   deckEvalCards,
   generateDrill,
-  simulateMatch,
-  type BatchResult,
   type CpuSkill,
-  type MatchResult,
   type PracticeDeck,
 } from "@/lib/practice-sim";
+import type {
+  RulesPracticeBatchResult,
+  RulesPracticeMatchResult,
+} from "@/lib/practice-rules";
+import type { BattleTraceEvent } from "@/lib/battle-engine/battle-trace";
+import type { DeckEffectCoverage } from "@/lib/battle-engine/coverage";
 import type { TrainingResult } from "@/lib/practice-training";
 import { proxiedCardImage } from "@/lib/img";
 import { cn } from "@/lib/utils";
@@ -67,11 +69,17 @@ interface PracticeSummaryMatchup {
   opponentLeaderId: string;
   cpuSkill: string;
   rulesVersion: string;
+  engineKind?: "rules_kernel" | "legacy_heuristic";
   runs: number;
   games: number;
   playerWins: number;
   opponentWins: number;
   winRate: number;
+  resolvedGames?: number;
+  inconclusiveGames?: number;
+  resolutionRate?: number;
+  resolvedWinRate?: number | null;
+  rulesStats?: RulesPracticeBatchResult["rulesStats"];
   firstPlayerWinRate: number;
   secondPlayerWinRate: number;
   avgTurns: number;
@@ -121,8 +129,10 @@ export function PracticeLab({ leaders, pool, usingMock }: PracticeLabProps) {
   const [drillSeed, setDrillSeed] = useState(1001);
   const [matchSeed, setMatchSeed] = useState(2401);
   const [games, setGames] = useState(100);
-  const [match, setMatch] = useState<MatchResult | null>(null);
-  const [batch, setBatch] = useState<BatchResult | null>(null);
+  const [match, setMatch] = useState<RulesPracticeMatchResult | null>(null);
+  const [batch, setBatch] = useState<RulesPracticeBatchResult | null>(null);
+  const [playerRulesDeckMode, setPlayerRulesDeckMode] = useState<"draft" | "generated">("generated");
+  const [isMatchRunning, setIsMatchRunning] = useState(false);
   const [training, setTraining] = useState<TrainingResult | null>(null);
   const [isBatchRunning, setIsBatchRunning] = useState(false);
   const [isTrainingRunning, setIsTrainingRunning] = useState(false);
@@ -149,6 +159,12 @@ export function PracticeLab({ leaders, pool, usingMock }: PracticeLabProps) {
     () => (draftLeaderId === playerLeader?.id ? Object.values(draftEntries) : []),
     [draftEntries, draftLeaderId, playerLeader?.id],
   );
+  const localDraftCount = localDraftEntries.reduce((sum, entry) => sum + entry.count, 0);
+  const rulesDraftReady = localDraftCount === 50;
+
+  useEffect(() => {
+    setPlayerRulesDeckMode(rulesDraftReady ? "draft" : "generated");
+  }, [playerLeader?.id, rulesDraftReady]);
 
   const playerDeck = useMemo(
     () => (playerLeader ? buildPracticeDeck(playerLeader, pool, localDraftEntries) : null),
@@ -190,9 +206,7 @@ export function PracticeLab({ leaders, pool, usingMock }: PracticeLabProps) {
       card: entry.card,
       rested: index % 2 === 1,
     }));
-  const matchFinalState = match?.replay.events.at(-1)?.state ?? null;
-  const matchPlayerBoard = match ? replayBoardCards(match, "player", cardsById) : [];
-  const matchOpponentBoard = match ? replayBoardCards(match, "opponent", cardsById) : [];
+  const matchFinalState = match?.finalState ?? null;
   const openingHandPreview = playerDeck.entries
     .flatMap((entry) => Array.from({ length: Math.min(entry.count, 1) }, () => entry.card))
     .slice(0, 5);
@@ -201,8 +215,10 @@ export function PracticeLab({ leaders, pool, usingMock }: PracticeLabProps) {
       (item) =>
         item.playerLeaderId === playerLeader.id &&
         item.opponentLeaderId === opponentLeader.id &&
-        item.cpuSkill === cpuSkill,
+        item.cpuSkill === cpuSkill &&
+        item.engineKind === "rules_kernel",
     ) ??
+    summary?.matchups.find((item) => item.engineKind === "rules_kernel") ??
     summary?.matchups[0] ??
     null;
   const focusOptions = playerDeck.entries
@@ -239,53 +255,45 @@ export function PracticeLab({ leaders, pool, usingMock }: PracticeLabProps) {
     }
   }
 
-  async function savePracticeRun(
-    mode: "match" | "batch",
-    replays: GameReplayLog[],
-    summaryMetrics?: Record<string, unknown>,
-  ) {
-    if (!playerDeck || !opponentDeck) return;
-    setSaveState({ status: "saving", detail: "対戦ログを保存中" });
+  function rulesPlayerRequest() {
+    return {
+      leaderId: playerLeader.id,
+      mode: playerRulesDeckMode,
+      ...(playerRulesDeckMode === "draft"
+        ? { cards: localDraftEntries.map((entry) => ({ cardId: entry.card.id, count: entry.count })) }
+        : {}),
+    };
+  }
+
+  async function runMatch() {
+    setIsMatchRunning(true);
+    setSaveState({ status: "saving", detail: "Rules対戦を実行・保存中" });
     try {
-      const response = await fetch("/api/practice/runs", {
+      const response = await fetch("/api/practice/match", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          mode,
-          playerLeaderId: playerDeck.leader.id,
-          opponentLeaderId: opponentDeck.leader.id,
-          replays,
-          summaryMetrics,
+          player: rulesPlayerRequest(),
+          opponent: { leaderId: opponentLeader.id },
+          seed: matchSeed,
+          cpuSkill,
         }),
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(String(payload.detail ?? payload.error ?? response.status));
-      }
-      setSaveState({
-        status: "saved",
-        runId: String(payload.runId),
-        detail: saveDetail(payload),
-      });
+      if (!response.ok) throw new Error(String(payload.detail ?? payload.error ?? response.status));
+      setMatch(payload.match as RulesPracticeMatchResult);
+      setSaveState({ status: "saved", runId: String(payload.save.runId), detail: saveDetail(payload.save) });
+      setMatchSeed((seed) => seed + 1);
       await refreshSummary();
     } catch (err) {
-      setSaveState({
-        status: "error",
-        detail: (err as Error).message,
-      });
+      setSaveState({ status: "error", detail: (err as Error).message });
+    } finally {
+      setIsMatchRunning(false);
     }
   }
 
-  function runMatch() {
-    if (!playerDeck || !opponentDeck) return;
-    const next = simulateMatch(playerDeck, opponentDeck, { seed: matchSeed, cpuSkill });
-    setMatch(next);
-    void savePracticeRun("match", [next.replay]);
-    setMatchSeed((seed) => seed + 1);
-  }
-
   async function runBatch() {
-    if (!playerDeck || !opponentDeck) return;
+    if (playerRulesDeckMode === "draft" && !rulesDraftReady) return;
     const safeGames = Math.min(MAX_BATCH_GAMES, Math.max(1, Math.floor(games)));
     setIsBatchRunning(true);
     setSaveState({
@@ -297,8 +305,8 @@ export function PracticeLab({ leaders, pool, usingMock }: PracticeLabProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          playerDeck,
-          opponentDeck,
+          player: rulesPlayerRequest(),
+          opponent: { leaderId: opponentLeader.id },
           games: safeGames,
           seed: matchSeed,
           cpuSkill,
@@ -310,7 +318,7 @@ export function PracticeLab({ leaders, pool, usingMock }: PracticeLabProps) {
       if (!response.ok) {
         throw new Error(String(payload.detail ?? payload.error ?? response.status));
       }
-      setBatch(payload.batch as BatchResult);
+      setBatch(payload.batch as RulesPracticeBatchResult);
       setSaveState({
         status: "saved",
         runId: String(payload.save.runId),
@@ -393,6 +401,28 @@ export function PracticeLab({ leaders, pool, usingMock }: PracticeLabProps) {
         />
       </section>
 
+      <Card className="border-border/40 bg-card/40">
+        <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+          <div>
+            <div className="text-sm font-semibold">Rules対戦デッキ</div>
+            <p className="text-muted-foreground text-xs">
+              下書きは補完せず、そのままserver-sideで合法性を検証します。
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button type="button" size="sm" variant={playerRulesDeckMode === "draft" ? "default" : "outline"} onClick={() => setPlayerRulesDeckMode("draft")}>
+              下書き（{localDraftCount}/50）
+            </Button>
+            <Button type="button" size="sm" variant={playerRulesDeckMode === "generated" ? "default" : "outline"} onClick={() => setPlayerRulesDeckMode("generated")}>
+              自動生成
+            </Button>
+          </div>
+          {playerRulesDeckMode === "draft" && !rulesDraftReady ? (
+            <p className="text-destructive w-full text-xs">Rules対戦には合法な50枚デッキが必要です。</p>
+          ) : null}
+        </CardContent>
+      </Card>
+
       <section className="grid gap-3 md:grid-cols-[minmax(0,1fr)_320px]">
         <Card className="border-border/40 bg-card/40">
           <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
@@ -447,7 +477,7 @@ export function PracticeLab({ leaders, pool, usingMock }: PracticeLabProps) {
         <TabsList className="w-full justify-start overflow-x-auto">
           <TabsTrigger value="drill">
             <Dices className="size-4" />
-            局面ドリル
+            簡易局面ドリル
           </TabsTrigger>
           <TabsTrigger value="match">
             <Bot className="size-4" />
@@ -567,46 +597,57 @@ export function PracticeLab({ leaders, pool, usingMock }: PracticeLabProps) {
               title="CPU戦"
               status={
                 match
-                  ? `${sideName(match.winner)}勝利 · ${reasonLabel(match.reason)}`
+                  ? `${outcomeLabel(match.outcome)} · ${reasonLabel(match.reason)}`
                   : `${selectedSkill.label} · seed ${matchSeed}`
               }
               playerLeader={playerLeader}
               opponentLeader={opponentLeader}
-              playerLife={match?.playerLife ?? playerLeader.life ?? 5}
-              opponentLife={match?.opponentLife ?? opponentLeader.life ?? 5}
-              playerDeckCount={matchFinalState?.playerDeck ?? playerDeck.totalCards}
-              opponentDeckCount={matchFinalState?.opponentDeck ?? opponentDeck.totalCards}
-              playerDon={`${matchFinalState?.playerDonAvailable ?? 0}/10`}
-              opponentDon={`${matchFinalState?.opponentDonAvailable ?? 0}/10`}
+              playerLife={matchFinalState?.player.life ?? playerLeader.life ?? 5}
+              opponentLife={matchFinalState?.opponent.life ?? opponentLeader.life ?? 5}
+              playerDeckCount={matchFinalState?.player.deck ?? playerDeck.totalCards}
+              opponentDeckCount={matchFinalState?.opponent.deck ?? opponentDeck.totalCards}
+              playerDon={`${matchFinalState ? matchFinalState.player.donTotal - matchFinalState.player.donRested : 0}/${matchFinalState?.player.donTotal ?? 0}`}
+              opponentDon={`${matchFinalState ? matchFinalState.opponent.donTotal - matchFinalState.opponent.donRested : 0}/${matchFinalState?.opponent.donTotal ?? 0}`}
               playerHand={match ? [] : openingHandPreview}
-              playerHandCount={matchFinalState?.playerHand ?? openingHandPreview.length}
-              opponentHandCount={matchFinalState?.opponentHand ?? 5}
-              playerBoard={matchPlayerBoard}
-              opponentBoard={matchOpponentBoard}
+              playerHandCount={matchFinalState?.player.hand ?? openingHandPreview.length}
+              opponentHandCount={matchFinalState?.opponent.hand ?? 5}
+              playerBoard={[]}
+              opponentBoard={[]}
+              playerBoardCount={matchFinalState?.player.characters}
+              opponentBoardCount={matchFinalState?.opponent.characters}
+              playerStageCount={matchFinalState?.player.stage}
+              opponentStageCount={matchFinalState?.opponent.stage}
+              playerTrashCount={matchFinalState?.player.trash}
+              opponentTrashCount={matchFinalState?.opponent.trash}
               footerBadge={match ? `${match.turns}T` : "READY"}
             />
 
             <div className="grid content-start gap-4">
               <Card className="border-border/40 bg-card/40">
                 <CardContent className="space-y-4 p-4">
-                <h2 className="font-display text-xl tracking-wide">1戦シミュレート</h2>
-                <div className="grid grid-cols-2 gap-3">
-                  <MetricBox label="自分総合" value={playerEval.composite.toFixed(0)} />
-                  <MetricBox label="CPU総合" value={opponentEval.composite.toFixed(0)} />
+                <div>
+                  <h2 className="font-display text-xl tracking-wide">Rules Kernel Practice v2</h2>
+                  <p className="text-muted-foreground text-xs">{match?.disclosureJa ?? "verified official factsをserver-sideで解決します。"}</p>
                 </div>
-                <Button type="button" className="w-full" onClick={runMatch}>
-                  <Play className="size-4" />
-                  対戦
+                <Button type="button" className="w-full" onClick={() => void runMatch()} disabled={isMatchRunning || (playerRulesDeckMode === "draft" && !rulesDraftReady)}>
+                  {isMatchRunning ? <RefreshCw className="size-4 animate-spin" /> : <Play className="size-4" />}
+                  {isMatchRunning ? "対戦中" : "対戦"}
                 </Button>
                 {match ? (
                   <div className="grid grid-cols-2 gap-3">
-                    <MetricBox label="勝者" value={sideName(match.winner)} />
+                    <MetricBox label="結果" value={outcomeLabel(match.outcome)} />
                     <MetricBox label="勝因" value={reasonLabel(match.reason)} />
                     <MetricBox label="ターン" value={String(match.turns)} />
-                    <MetricBox label="イベント" value={String(match.replay.events.length)} />
-                    <MetricBox label="自分ライフ" value={String(match.playerLife)} />
-                    <MetricBox label="CPUライフ" value={String(match.opponentLife)} />
+                    <MetricBox label="イベント" value={String(match.trace.length)} />
+                    <MetricBox label="自分Coverage" value={coverageSummary(match.playerCoverage)} />
+                    <MetricBox label="CPU Coverage" value={coverageSummary(match.opponentCoverage)} />
                   </div>
+                ) : null}
+                {match && (!match.playerCoverage.complete || !match.opponentCoverage.complete) ? (
+                  <p className="text-source-unverified text-xs">Coverageにpartial / unsupportedがあります。未対応効果は推測実行していません。</p>
+                ) : null}
+                {match?.reason === "engine_guard" ? (
+                  <p className="text-destructive text-xs">Engine guardにより未決着です。</p>
                 ) : null}
                 </CardContent>
               </Card>
@@ -617,16 +658,16 @@ export function PracticeLab({ leaders, pool, usingMock }: PracticeLabProps) {
                     <h3 className="font-display text-lg tracking-wide">再現ログ</h3>
                     {match ? (
                       <Badge variant="outline">
-                        {sideName(match.replay.header.firstPlayer)}先攻
+                        {sideName(match.firstPlayer)}先攻
                       </Badge>
                     ) : null}
                   </div>
                   <ScrollArea className="h-80">
                     {match ? (
                       <ol className="space-y-1 text-sm">
-                        {match.log.map((line, index) => (
-                          <li key={`${index}:${line}`} className="text-muted-foreground">
-                            {line}
+                        {match.trace.map((event) => (
+                          <li key={event.index} className="text-muted-foreground">
+                            {traceLabel(event, cardsById)}
                           </li>
                         ))}
                       </ol>
@@ -673,12 +714,14 @@ export function PracticeLab({ leaders, pool, usingMock }: PracticeLabProps) {
                 </Button>
                 {batch ? (
                   <div className="grid grid-cols-2 gap-3">
-                    <MetricBox label="自分勝率" value={percent(batch.playerWinRate)} />
-                    <MetricBox label="平均ターン" value={batch.avgTurns.toFixed(1)} />
-                    <MetricBox label="先攻勝率" value={percent(batch.metrics.firstPlayerWinRate)} />
-                    <MetricBox label="後攻勝率" value={percent(batch.metrics.secondPlayerWinRate)} />
-                    <MetricBox label="DON効率" value={percent(batch.metrics.averageDonEfficiency)} />
-                    <MetricBox label="トリガー成功" value={percent(batch.metrics.triggerSuccessRate)} />
+                    <MetricBox label="解決済み勝率" value={nullablePercent(batch.resolvedWinRate)} />
+                    <MetricBox label="解決率" value={percent(batch.resolutionRate)} />
+                    <MetricBox label="平均ターン" value={batch.averageResolvedTurns?.toFixed(1) ?? "-"} />
+                    <MetricBox label="未決着" value={String(batch.inconclusiveGames)} />
+                    <MetricBox label="先攻時勝率" value={nullablePercent(batch.firstPlayer.resolvedWinRate)} />
+                    <MetricBox label="後攻時勝率" value={nullablePercent(batch.secondPlayer.resolvedWinRate)} />
+                    <MetricBox label="95%区間" value={batch.resolvedWinRateCi95 ? `${percent(batch.resolvedWinRateCi95.lower)}–${percent(batch.resolvedWinRateCi95.upper)}` : "-"} />
+                    <MetricBox label="勝利 / 敗北" value={`${batch.playerWins} / ${batch.opponentWins}`} />
                   </div>
                 ) : null}
               </CardContent>
@@ -690,13 +733,13 @@ export function PracticeLab({ leaders, pool, usingMock }: PracticeLabProps) {
                   <h3 className="font-display text-lg tracking-wide">分析サマリー</h3>
                   {batch ? (
                     <div className="grid gap-3 md:grid-cols-3">
-                      <MetricBox label="Keep勝率" value={nullablePercent(batch.metrics.mulliganKeepWinRate)} />
-                      <MetricBox label="Redraw勝率" value={nullablePercent(batch.metrics.mulliganRedrawWinRate)} />
-                      <MetricBox label="敗北時カウンター" value={batch.metrics.counterOverflowOnLoss.toFixed(0)} />
+                      <MetricBox label="カード使用" value={String(batch.rulesStats.cardsPlayed)} />
+                      <MetricBox label="攻撃" value={String(batch.rulesStats.attacksDeclared)} />
+                      <MetricBox label="解決効果" value={String(batch.rulesStats.supportedEffectsResolved)} />
                     </div>
                   ) : (
                     <p className="text-muted-foreground text-sm">
-                      集計すると、勝率、先攻後攻差、マリガン、トリガー、DON効率、ライフ推移を表示します。
+                      Rules Kernelで勝敗、未決着、先攻後攻差、効果解決統計を集計します。
                     </p>
                   )}
                 </CardContent>
@@ -706,70 +749,37 @@ export function PracticeLab({ leaders, pool, usingMock }: PracticeLabProps) {
                 <>
                   <Card className="border-border/40 bg-card/40">
                     <CardContent className="space-y-3 p-4">
-                      <h3 className="font-display text-lg tracking-wide">Ablation</h3>
-                      <ul className="space-y-2">
-                        {batch.metrics.ablation.map((result) => (
-                          <li
-                            key={result.cardId}
-                            className="border-border/40 bg-background/30 flex items-center justify-between gap-3 rounded-md border p-3"
-                          >
-                            <div className="min-w-0">
-                              <div className="truncate text-sm font-semibold">{result.name}</div>
-                              <div className="text-muted-foreground text-xs">
-                                → {result.replacementName} · {result.games}戦
-                              </div>
-                            </div>
-                            <span className="font-mono text-sm tabular-nums">
-                              {result.delta >= 0 ? "+" : ""}
-                              {result.delta.toFixed(1)}pt
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    </CardContent>
-                  </Card>
-
-                  <Card className="border-border/40 bg-card/40">
-                    <CardContent className="space-y-3 p-4">
-                      <h3 className="font-display text-lg tracking-wide">ターン別に引く確率</h3>
-                      <div className="grid gap-2 md:grid-cols-2">
-                        {batch.metrics.drawProbability.map((item) => (
-                          <div
-                            key={item.cardId}
-                            className="border-border/40 bg-background/30 rounded-md border p-3"
-                          >
-                            <div className="truncate text-sm font-semibold">{item.name}</div>
-                            <div className="text-muted-foreground mt-1 flex flex-wrap gap-2 font-mono text-[11px]">
-                              <span>{item.copies}枚</span>
-                              <span>3T {percent(item.turn3)}</span>
-                              <span>5T {percent(item.turn5)}</span>
-                              <span>7T {percent(item.turn7)}</span>
-                            </div>
-                          </div>
-                        ))}
+                      <h3 className="font-display text-lg tracking-wide">Rules coverage</h3>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <MetricBox label="自分 Main / Leader" value={`${coverageSummary(batch.playerCoverage)} / ${batch.playerCoverage.leaderStatus}`} />
+                        <MetricBox label="CPU Main / Leader" value={`${coverageSummary(batch.opponentCoverage)} / ${batch.opponentCoverage.leaderStatus}`} />
                       </div>
+                      {!batch.playerCoverage.complete || !batch.opponentCoverage.complete ? (
+                        <p className="text-source-unverified text-xs">partial / unsupported効果があります。未対応効果は推測実行していません。</p>
+                      ) : null}
+                      {batch.resolutionRate < 0.7 ? (
+                        <p className="text-source-unverified text-xs">解決率が70%未満です。勝率より未決着条件を優先して確認してください。</p>
+                      ) : null}
+                      {batch.outcomes.engine_guard > 0 ? (
+                        <p className="text-destructive text-xs">Engine guard: {batch.outcomes.engine_guard}戦</p>
+                      ) : null}
                     </CardContent>
                   </Card>
 
                   <Card className="border-border/40 bg-card/40">
                     <CardContent className="space-y-3 p-4">
-                      <h3 className="font-display text-lg tracking-wide">カード使用タイミング</h3>
-                      <ul className="space-y-2">
-                        {batch.metrics.cardTiming.map((card) => (
-                          <li
-                            key={`${card.side}:${card.cardId}`}
-                            className="border-border/40 bg-background/30 flex items-center justify-between gap-3 rounded-md border p-3"
-                          >
-                            <div className="min-w-0">
-                              <div className="truncate text-sm font-semibold">{card.name}</div>
-                              <div className="text-muted-foreground text-xs">
-                                {sideName(card.side)} · {card.uses}回
-                              </div>
-                            </div>
-                            <span className="font-mono text-sm">{card.averageTurn.toFixed(1)}T</span>
-                          </li>
-                        ))}
-                      </ul>
+                      <h3 className="font-display text-lg tracking-wide">Rules詳細統計</h3>
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <MetricBox label="Leader攻撃" value={String(batch.rulesStats.leaderAttacks)} />
+                        <MetricBox label="Character攻撃" value={String(batch.rulesStats.characterAttacks)} />
+                        <MetricBox label="Blocker" value={String(batch.rulesStats.blockersUsed)} />
+                        <MetricBox label="Counter" value={String(batch.rulesStats.counterCardsUsed)} />
+                        <MetricBox label="Trigger発動" value={String(batch.rulesStats.triggersActivated)} />
+                        <MetricBox label="Search" value={String(batch.rulesStats.searchesResolved)} />
+                        <MetricBox label="DON付与" value={String(batch.rulesStats.donAttached)} />
+                        <MetricBox label="Deck out" value={String(batch.rulesStats.deckOut)} />
+                        <MetricBox label="未対応遭遇" value={String(batch.rulesStats.partialEffectsEncountered + batch.rulesStats.unsupportedEffectsEncountered)} />
+                      </div>
                     </CardContent>
                   </Card>
                 </>
@@ -786,6 +796,9 @@ export function PracticeLab({ leaders, pool, usingMock }: PracticeLabProps) {
                   <h2 className="font-display text-xl tracking-wide">指定デッキ強化</h2>
                   <p className="text-muted-foreground text-xs">
                     {playerDeck.source === "draft" ? "下書きデッキ" : "自動生成デッキ"}をCPUに渡して探索します。
+                  </p>
+                  <p className="text-source-unverified mt-2 text-xs">
+                    自己強化は旧evaluation engineを使用しています。Rules Kernel統合は次段階です。
                   </p>
                 </div>
 
@@ -999,6 +1012,12 @@ function PracticeBoardSnapshot({
   opponentHandCount,
   playerBoard,
   opponentBoard,
+  playerBoardCount,
+  opponentBoardCount,
+  playerStageCount,
+  opponentStageCount,
+  playerTrashCount,
+  opponentTrashCount,
   footerBadge,
 }: {
   title: string;
@@ -1016,6 +1035,12 @@ function PracticeBoardSnapshot({
   opponentHandCount: number;
   playerBoard: PracticeBoardCard[];
   opponentBoard: PracticeBoardCard[];
+  playerBoardCount?: number;
+  opponentBoardCount?: number;
+  playerStageCount?: number;
+  opponentStageCount?: number;
+  playerTrashCount?: number;
+  opponentTrashCount?: number;
   footerBadge: string;
 }) {
   return (
@@ -1036,6 +1061,9 @@ function PracticeBoardSnapshot({
           don={opponentDon}
           handCount={opponentHandCount}
           board={opponentBoard}
+          boardCount={opponentBoardCount}
+          stageCount={opponentStageCount}
+          trashCount={opponentTrashCount}
         />
 
         <div className="border-border/50 bg-background/45 grid min-h-16 grid-cols-[1fr_auto_1fr] items-center gap-3 rounded-lg border px-3 py-2 backdrop-blur">
@@ -1055,6 +1083,9 @@ function PracticeBoardSnapshot({
           handCount={playerHandCount ?? playerHand.length}
           hand={playerHand}
           board={playerBoard}
+          boardCount={playerBoardCount}
+          stageCount={playerStageCount}
+          trashCount={playerTrashCount}
         />
       </div>
     </div>
@@ -1070,6 +1101,9 @@ function PracticeBoardSide({
   handCount,
   hand = [],
   board,
+  boardCount,
+  stageCount,
+  trashCount,
 }: {
   side: "player" | "opponent";
   leader: CardListItem;
@@ -1079,6 +1113,9 @@ function PracticeBoardSide({
   handCount: number;
   hand?: CardListItem[];
   board: PracticeBoardCard[];
+  boardCount?: number;
+  stageCount?: number;
+  trashCount?: number;
 }) {
   const flipped = side === "opponent";
   return (
@@ -1097,6 +1134,7 @@ function PracticeBoardSide({
         <div className="grid grid-cols-5 gap-2">
           {Array.from({ length: 5 }, (_, index) => {
             const item = board[index];
+            const occupied = item || (boardCount !== undefined && index < boardCount);
             return (
               <div
                 key={item?.id ?? `${side}:empty:${index}`}
@@ -1104,6 +1142,8 @@ function PracticeBoardSide({
               >
                 {item ? (
                   <PracticeCardTile card={item.card} flipped={flipped} rested={item.rested} />
+                ) : occupied ? (
+                  <span className="text-primary text-[10px]">CHARACTER</span>
                 ) : (
                   <span className="text-muted-foreground/50 text-[10px]">FIELD</span>
                 )}
@@ -1111,6 +1151,12 @@ function PracticeBoardSide({
             );
           })}
         </div>
+        {stageCount !== undefined || trashCount !== undefined ? (
+          <div className="text-muted-foreground flex gap-3 text-[10px]">
+            <span>STAGE {stageCount ?? 0}</span>
+            <span>TRASH {trashCount ?? 0}</span>
+          </div>
+        ) : null}
         {side === "opponent" ? (
           <PracticeBackHand count={handCount} />
         ) : (
@@ -1268,26 +1314,6 @@ function drillBoardCards(
     }));
 }
 
-function replayBoardCards(
-  match: MatchResult,
-  side: "player" | "opponent",
-  cardsById: Map<string, CardListItem>,
-): PracticeBoardCard[] {
-  const cards: PracticeBoardCard[] = [];
-  for (const event of match.replay.events) {
-    if (event.type !== "main_phase_action" || event.side !== side) continue;
-    const cardId = typeof event.payload.cardId === "string" ? event.payload.cardId : null;
-    const card = cardId ? cardsById.get(cardId) : null;
-    if (!card) continue;
-    cards.push({
-      id: `${side}:${event.index}:${card.id}`,
-      card,
-      rested: event.turn < match.turns,
-    });
-  }
-  return cards.slice(-5);
-}
-
 function SavedAnalysisPanel({
   summary,
   current,
@@ -1348,6 +1374,27 @@ function SavedAnalysisPanel({
 
         {summary && summary.totalGames > 0 && current ? (
           <div className="space-y-4">
+            <Badge variant="outline">
+              {current.engineKind === "rules_kernel" ? "Rules Kernel記録" : "旧heuristic記録"}
+            </Badge>
+            {current.engineKind === "rules_kernel" ? (
+              <>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+                  <MetricBox label="保存試合" value={String(current.games)} />
+                  <MetricBox label="解決試合" value={String(current.resolvedGames ?? 0)} />
+                  <MetricBox label="未決着" value={String(current.inconclusiveGames ?? 0)} />
+                  <MetricBox label="解決率" value={percent(current.resolutionRate ?? 0)} />
+                  <MetricBox label="解決済み勝率" value={nullablePercent(current.resolvedWinRate ?? null)} />
+                  <MetricBox label="平均ターン" value={current.avgTurns.toFixed(1)} />
+                </div>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <MetricBox label="攻撃" value={String(current.rulesStats?.attacksDeclared ?? 0)} />
+                  <MetricBox label="Trigger発動" value={String(current.rulesStats?.triggersActivated ?? 0)} />
+                  <MetricBox label="効果解決" value={String(current.rulesStats?.supportedEffectsResolved ?? 0)} />
+                </div>
+              </>
+            ) : (
+              <>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
               <MetricBox label="保存試合" value={String(current.games)} />
               <MetricBox label="保存Run" value={String(current.runs)} />
@@ -1385,6 +1432,8 @@ function SavedAnalysisPanel({
                 }))}
               />
             </div>
+              </>
+            )}
           </div>
         ) : (
           <p className="text-muted-foreground text-sm">
@@ -1572,12 +1621,32 @@ function sideName(side: "player" | "opponent"): string {
   return side === "player" ? "自分" : "CPU";
 }
 
-function reasonLabel(reason: MatchResult["reason"]): string {
-  const labels: Record<MatchResult["reason"], string> = {
+function outcomeLabel(outcome: RulesPracticeMatchResult["outcome"]): string {
+  if (outcome === "player") return "勝利";
+  if (outcome === "opponent") return "敗北";
+  return "未決着";
+}
+
+function reasonLabel(reason: RulesPracticeMatchResult["reason"]): string {
+  const labels: Record<RulesPracticeMatchResult["reason"], string> = {
     leader_damage: "リーサル",
     deck_out: "デッキ切れ",
     effect_win: "効果勝利",
-    score_at_limit: "判定",
+    turn_limit: "ターン上限",
+    engine_guard: "Engine guard",
   };
   return labels[reason];
+}
+
+function coverageSummary(coverage: DeckEffectCoverage): string {
+  return `S${coverage.supportedCards} / P${coverage.partialCards} / U${coverage.unsupportedCards}`;
+}
+
+function traceLabel(event: BattleTraceEvent, cardsById: Map<string, CardListItem>): string {
+  const actor = event.actor ? sideName(event.actor) : "system";
+  const card = event.cardId ? cardsById.get(event.cardId)?.name ?? event.cardId : null;
+  const target = event.targetId ? cardsById.get(event.targetId)?.name ?? event.targetId : null;
+  return [`T${event.turn}`, actor, event.type, card, target ? `→ ${target}` : null]
+    .filter(Boolean)
+    .join(" · ");
 }
