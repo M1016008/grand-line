@@ -15,14 +15,16 @@ Battle Benchmark      ✅ Rules Benchmark v2
     ↓
 Optimizer             ✅ Rules Kernel Optimizer v2
     ↓
-Practice              pending
+Practice Match/Batch  ✅ Rules Kernel Practice v2
+Practice Training     pending (legacy evaluation engine)
 ```
 
 The user-facing Deck Intelligence Battle Benchmark and Deck Optimizer use the
 Rules Headless Runner. The old `deck-battle-benchmark.ts` runner remains only
-for unmigrated Practice-era callers and regressions; Optimizer does not import
-or call it. `practice-training.ts` and the Practice UI remain on their existing
-paths until a dedicated migration.
+for legacy regressions; Optimizer and Practice Match/Batch do not import or call
+it. `practice-training.ts` and the Training tab remain on their existing path.
+Match/Batch resolve verified official facts and active restrictions on the
+server, then share one precompiled Rules environment for every game in a run.
 
 ## Architecture
 
@@ -158,4 +160,5 @@ causal improvement.
 Coverage remains intentionally conservative. Partial or unsupported effect
 families identified by the existing compiler remain unexecuted. Rules Benchmark
 v2 and Rules Kernel Optimizer v2 are not tournament or meta win-rate models.
-Practice still uses its existing path pending a dedicated migration.
+Practice Match and Batch use Rules Kernel Practice v2. Training and the simple
+situation drill remain legacy tools and are labelled separately.

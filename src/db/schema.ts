@@ -654,9 +654,16 @@ export const practiceGames = sqliteTable(
       .references(() => practiceRuns.id, { onDelete: "cascade" }),
     seed: integer().notNull(),
     firstPlayer: text({ enum: ["player", "opponent"] }).notNull(),
-    winner: text({ enum: ["player", "opponent"] }).notNull(),
+    winner: text({ enum: ["player", "opponent", "inconclusive"] }).notNull(),
     reason: text({
-      enum: ["leader_damage", "deck_out", "effect_win", "score_at_limit"],
+      enum: [
+        "leader_damage",
+        "deck_out",
+        "effect_win",
+        "turn_limit",
+        "engine_guard",
+        "score_at_limit",
+      ],
     }).notNull(),
     turns: integer().notNull(),
     playerLife: integer().notNull(),
